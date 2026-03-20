@@ -27,17 +27,22 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra desktop-build
 
-      - name: Install bundled ffmpeg source
+      - name: Install ffmpeg
         shell: pwsh
         run: |
           choco install ffmpeg --yes --no-progress
-          New-Item -ItemType Directory -Force -Path assets/windows | Out-Null
-          $ffmpeg = (Get-Command ffmpeg).Source
-          Copy-Item $ffmpeg assets/windows/ffmpeg.exe -Force
           ffmpeg -version | Select-Object -First 1
 
       - name: Run desktop tests
         run: uv run python -m unittest discover -s tests
+
+      - name: Bundle ffmpeg.exe for Windows package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path assets/windows | Out-Null
+          $ffmpeg = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg\tools' -Filter ffmpeg.exe -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ffmpeg) { throw 'Unable to locate real ffmpeg.exe after Chocolatey install.' }
+          Copy-Item $ffmpeg assets/windows/ffmpeg.exe -Force
 
       - name: Build Windows launcher
         run: uv run pyinstaller --noconfirm "Apple Music Downloader Windows.spec"
