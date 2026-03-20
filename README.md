@@ -53,17 +53,22 @@ This repository is adapted from Gamdl. The current primary deliverable is a macO
 
 ## 📋 前置要求 / Prerequisites
 
-### Required / 必需
+### Desktop App / 桌面版
+
+- **macOS only**
+- **Active Apple Music subscription / 有效的 Apple Music 订阅**
+- Optional: **[Wrapper](#️-wrapper)** for `ALAC / Dolby Atmos`
+
+### CLI (Advanced Users) / CLI（高级用户）
 
 - **Python 3.10 or higher**
 - **Apple Music Cookies / Apple Music Cookies** - Export your browser cookies in Netscape format while logged in with an active subscription at the Apple Music website:
   - **Firefox**: [Export Cookies](https://addons.mozilla.org/addon/export-cookies-txt)
   - **Chromium**: [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
 
-### Optional / 可选
+Optional CLI tools:
 
-Add these tools to your system PATH for additional features.  
-如需更完整的功能，请把下面这些工具加入系统 PATH。
+CLI 可选工具：
 
 - **[FFmpeg](https://ffmpeg.org/download.html)** - Required for `ffmpeg` music video remux mode
 - **[mp4decrypt](https://www.bento4.com/downloads/)** - Required for `mp4box` music video remux mode
@@ -73,22 +78,66 @@ Add these tools to your system PATH for additional features.
 
 ## 📦 安装 / Installation
 
-**Install Gamdl via pip / 使用 pip 安装：**
+### Desktop App (Recommended) / 桌面版（推荐）
+
+For most users, use the packaged macOS app instead of the CLI.
+
+对大多数用户来说，应该优先使用打包好的 macOS 桌面版，而不是 CLI。
+
+1. Open `Apple Music Downloader.dmg`
+2. Drag `Apple Music Downloader.app` into `Applications`
+3. Launch the app from `Applications`
+4. If Gatekeeper blocks the first launch, open `System Settings > Privacy & Security`, then click `Open Anyway`
+5. Sign in inside the app or import your browser session
+
+If you need to build the app locally:
+
+如果你需要本地构建桌面版：
+
+```bash
+./scripts/build-macos-app.sh
+```
+
+### CLI Installation (Advanced Users) / CLI 安装（高级用户）
 
 ```bash
 pip install gamdl
 ```
 
-**Setup cookies / 配置 cookies：**
+Setup cookies / 配置 cookies：
 
 1. Place your cookies file in the working directory as `cookies.txt`, or
 2. Specify the path using `--cookies-path` or in the config file
 
 ## 🚀 使用 / Usage
 
+### Desktop App (Recommended) / 桌面版（推荐）
+
+1. Open `Apple Music Downloader` from `Applications`
+2. Log in with your Apple Music account inside the app, or import your browser session
+3. Paste one or more Apple Music URLs
+4. Review output path and download preferences
+5. Start the queue and monitor progress in the app
+
+Desktop app focus:
+
+桌面版当前重点：
+
+- Songs, albums, and playlists
+- In-app login plus browser session import
+- Queue-based downloads
+- Local logs and diagnostics export
+- AAC by default, external wrapper for `ALAC / Dolby Atmos`
+
+### CLI Quick Start (Advanced Users) / CLI 快速入口（高级用户）
+
 ```bash
 gamdl [OPTIONS] URLS...
 ```
+
+For full CLI details, keep reading the remaining CLI sections below.
+
+完整的 CLI 细节说明请继续阅读下面保留的命令行参考部分。
 
 ### Supported URL Types / 支持的链接类型
 
@@ -311,29 +360,11 @@ Use the [wrapper](https://github.com/WorldObservationLog/wrapper) to download so
 2. **Enable wrapper in Gamdl** - Use `--use-wrapper` flag or set `use_wrapper = true` in config
 3. **Run Gamdl** - Download as usual with the wrapper enabled
 
-## 🖥️ Desktop App / 桌面版
+## 🛠️ Desktop Build & Development / 桌面版构建与开发
 
-This fork now includes a macOS desktop shell for the local GUI.
+This section is for local desktop development, packaging, and diagnostics.
 
-这个 fork 现在包含一个 macOS 桌面壳，产品名为 `Apple Music Downloader`。
-
-The app is focused on:
-
-桌面版当前重点是：
-
-- Songs, albums, and playlists
-- In-app Apple Music login plus browser session import
-- Queue-based downloads
-- Local logs and diagnostics export
-- macOS only
-- AAC by default, external wrapper for ALAC / Dolby Atmos
-
-- 歌曲、专辑和歌单
-- App 内 Apple Music 登录，以及浏览器会话导入
-- 队列式下载
-- 本地日志和诊断包导出
-- 仅支持 macOS
-- 默认 AAC，ALAC / 杜比全景声需要外部 wrapper
+这一节面向桌面版的本地开发、打包和诊断。
 
 ### Run During Development / 开发时运行
 
@@ -436,7 +467,7 @@ First-run desktop defaults are:
 - ALAC / 杜比全景声需要外部 wrapper
 - MV、上传视频和更多高级下载路径仍以 CLI 为主
 
-## 🧾 CLI Reference / 命令行参考
+## 🧾 Additional CLI Reference / 更多命令行参考
 
 The remaining sections below are primarily CLI reference inherited from upstream Gamdl.
 
