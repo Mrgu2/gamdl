@@ -119,6 +119,8 @@ def main() -> None:
         paths=paths,
         log_store=log_store,
         folder_picker=None,
+        file_picker=None,
+        input_folder_picker=None,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

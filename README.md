@@ -1,561 +1,226 @@
-# Apple Music Downloader / Gamdl Fork
+# Apple Music Downloader 1.0.0
 
-[![PyPI version](https://img.shields.io/pypi/v/gamdl?color=blue)](https://pypi.org/project/gamdl/)
-[![Python versions](https://img.shields.io/pypi/pyversions/gamdl)](https://pypi.org/project/gamdl/)
-[![License](https://img.shields.io/github/license/glomatico/gamdl)](https://github.com/glomatico/gamdl/blob/main/LICENSE)
-[![Downloads](https://img.shields.io/pypi/dm/gamdl)](https://pypi.org/project/gamdl/)
+[![Release](https://img.shields.io/badge/release-1.0.0-0a84ff)](https://github.com/Mrgu2/gamdl/releases)
+[![License](https://img.shields.io/github/license/Mrgu2/gamdl)](https://github.com/Mrgu2/gamdl/blob/codex/fix-wrapper-alac-download/LICENSE)
+[![Windows Build](https://img.shields.io/github/actions/workflow/status/Mrgu2/gamdl/build-windows.yml?branch=codex%2Ffix-wrapper-alac-download&label=windows%20build)](https://github.com/Mrgu2/gamdl/actions/workflows/build-windows.yml)
 
 <p align="center">
   <img src="assets/macos/app-icon-1024.png" alt="Apple Music Downloader app icon" width="180" />
 </p>
 
-Adapted from [Gamdl (Glomatico's Apple Music Downloader)](https://github.com/glomatico/gamdl).
+这是一个以桌面版为中心维护的 Apple Music 下载工具 fork，基于上游 [Gamdl](https://github.com/glomatico/gamdl) 改编，由 [@Mrgu2](https://github.com/Mrgu2) 持续维护。
 
-这是一个基于 Gamdl 改编的仓库，当前主要交付物是一个 macOS 桌面版 `Apple Music Downloader`，同时保留原始 CLI 能力和大部分命令行说明。
+软件纯免费开源，无病毒，无额外广告。请确保你是从 GitHub [@Mrgu2](https://github.com/Mrgu2/gamdl) 下载该软件，以保证来源可核验、没有后门风险。
 
-This repository is adapted from Gamdl. The current primary deliverable is a macOS desktop app called `Apple Music Downloader`, while the original CLI capabilities and most command-line reference docs are still kept in the repo.
+## 项目定位
 
-## 项目说明 / Overview
+`Apple Music Downloader 1.0.0` 的目标很明确：
 
-### 桌面版当前定位 / Current Desktop Scope
+- 提供开箱即用的桌面客户端，而不是只给命令行
+- 默认覆盖最常用场景：歌曲、专辑、歌单下载
+- 支持本地 FFmpeg 转换页面，面向实际整理音乐库
+- 保留上游 CLI 能力，方便高级用户继续脚本化使用
 
-- `macOS only`
-- 面向歌曲、专辑、歌单下载
-- 支持 App 内登录和浏览器登录态导入
-- 默认音质为 AAC
-- `ALAC / 杜比全景声` 需要外部 wrapper
-- 本地保存登录态、日志和诊断包
+当前维护分支：
 
-- `macOS only`
-- Focused on songs, albums, and playlists
-- Supports in-app login and browser session import
-- AAC is the default format
-- `ALAC / Dolby Atmos` require an external wrapper
-- Stores sessions, logs, and diagnostics locally
+- Fork 仓库：[Mrgu2/gamdl](https://github.com/Mrgu2/gamdl)
+- 当前修改分支：[codex/fix-wrapper-alac-download](https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download)
+- 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-### 仓库包含两条使用路径 / Two Ways To Use This Repo
+## 1.0.0 发布内容
 
-1. `桌面版 / Desktop app`
-   - 面向最终用户和内测分发
-   - For end users and internal macOS testing
-2. `CLI / Command-line`
-   - 继承自原始 Gamdl，适合高级用户
-   - Inherited from upstream Gamdl and intended for advanced users
+正式版 `1.0.0` 交付两套桌面客户端：
 
-## ✨ 功能 / Features
+- `Apple.Music.Downloader.dmg`
+  - 面向 macOS
+  - 包含桌面应用和内置 `ffmpeg`
+- `Apple.Music.Downloader.Windows.zip`
+  - 面向 Windows
+  - 保持和之前 release 一致的分发形式
+  - 由 GitHub Actions 在 `windows-latest` 上构建
 
-- 🎵 **High-Quality Songs / 高质量歌曲** - Download songs in AAC 256kbps and other codecs
-- 🎬 **High-Quality Music Videos / 高质量 MV** - Download music videos in resolutions up to 4K
-- 📝 **Synced Lyrics / 同步歌词** - Download synced lyrics in LRC, SRT, or TTML formats
-- 🏷️ **Rich Metadata / 完整标签** - Automatic tagging with comprehensive metadata
-- 🎤 **Artist Support / 艺人页支持** - Download all albums or music videos from an artist
-- ⚙️ **Highly Customizable / 高可配置** - Extensive configuration options for advanced users
+源码仓库仍然保留 CLI 与开发环境，适合高级用户自行构建或二次修改。
 
-## 📋 前置要求 / Prerequisites
+## 主要功能
 
-### Desktop App / 桌面版
+### 下载
 
-- **macOS only**
-- **Active Apple Music subscription / 有效的 Apple Music 订阅**
-- Optional: **[Wrapper](#️-wrapper)** for `ALAC / Dolby Atmos`
+- 下载歌曲、专辑、歌单
+- 支持 App 内登录
+- 支持导入浏览器登录态
+- 统一任务队列与日志页面
+- 默认 AAC 可直接使用
+- `ALAC / 杜比全景声` 继续走外部 wrapper
 
-### CLI (Advanced Users) / CLI（高级用户）
+### 转换
 
-- **Python 3.10 or higher**
-- **Apple Music Cookies / Apple Music Cookies** - Export your browser cookies in Netscape format while logged in with an active subscription at the Apple Music website:
-  - **Firefox**: [Export Cookies](https://addons.mozilla.org/addon/export-cookies-txt)
-  - **Chromium**: [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+- 左侧栏独立 `转换` 页面
+- 支持选择单个文件或整个目录
+- 支持选择输出目录
+- 支持输出 `FLAC` 和 `MP3`
+- 目录输入时保留原始目录结构
+- 复制常见标签和封面
+- 自动写入安全提示评论字段
 
-Optional CLI tools:
+转换策略：
 
-CLI 可选工具：
+- `FLAC`
+  - 保持原采样率
+  - 尽量保持原位宽
+  - 保留曲目编号、曲目总数、碟片编号、碟片总数
+- `MP3`
+  - 保持原采样率
+  - 使用高质量 `libmp3lame -q:a 0`
+  - 对不兼容采样率直接报错，不偷偷重采样
 
-- **[FFmpeg](https://ffmpeg.org/download.html)** - Required for `ffmpeg` music video remux mode
-- **[mp4decrypt](https://www.bento4.com/downloads/)** - Required for `mp4box` music video remux mode
-- **[MP4Box](https://gpac.io/downloads/gpac-nightly-builds/)** - Required for `mp4box` music video remux mode
-- **[N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE/releases/latest)** - Required for `nm3u8dlre` download mode, which is faster than the default downloader
-- **[Wrapper](#️-wrapper)** - For downloading songs in ALAC and other experimental codecs without API limitations
+### 诊断与安全
 
-## 📦 安装 / Installation
+- 本地保存设置、日志和诊断信息
+- About 页面显示 fork 来源、修改者和安全下载提示
+- macOS 打包时优先使用内置 `ffmpeg`
+- 缺失 `ffmpeg` 时会在界面中直接提示，不会默默失败
 
-### Desktop App (Recommended) / 桌面版（推荐）
+## 下载与安装
 
-For most users, use the packaged macOS app instead of the CLI.
+### macOS
 
-对大多数用户来说，应该优先使用打包好的 macOS 桌面版，而不是 CLI。
+1. 前往 [Releases](https://github.com/Mrgu2/gamdl/releases)
+2. 下载 `Apple.Music.Downloader.dmg`
+3. 将 `Apple Music Downloader.app` 拖到 `Applications`
+4. 首次打开如果被 Gatekeeper 阻止，在 `系统设置 > 隐私与安全性` 里点 `仍要打开`
 
-1. Open `Apple Music Downloader.dmg`
-2. Drag `Apple Music Downloader.app` into `Applications`
-3. Launch the app from `Applications`
-4. If Gatekeeper blocks the first launch, open `System Settings > Privacy & Security`, then click `Open Anyway`
-5. Sign in inside the app or import your browser session
+macOS 包说明：
 
-If you need to build the app locally:
+- 当前发布包内置 `ffmpeg`
+- 当前内置构建针对 Apple Silicon
+- 如需重新打包，请参考下方构建说明
 
-如果你需要本地构建桌面版：
+### Windows
 
-```bash
-./scripts/build-macos-app.sh
-```
+1. 前往 [Releases](https://github.com/Mrgu2/gamdl/releases)
+2. 下载 `Apple.Music.Downloader.Windows.zip`
+3. 解压后运行 `Apple Music Downloader Windows.exe`
 
-### CLI Installation (Advanced Users) / CLI 安装（高级用户）
+Windows 包说明：
 
-```bash
-pip install gamdl
-```
+- 继续沿用之前 release 的 zip 分发形式
+- 当前构建由 GitHub Actions 自动生成
+- 目前主要做过构建级验证，建议保留源码仓库用于问题复现
 
-Setup cookies / 配置 cookies：
+## 使用说明
 
-1. Place your cookies file in the working directory as `cookies.txt`, or
-2. Specify the path using `--cookies-path` or in the config file
+### 下载页面
 
-## 🚀 使用 / Usage
+1. 登录 Apple Music 账号，或导入浏览器登录态
+2. 粘贴一个或多个 Apple Music 链接
+3. 确认输出目录和下载设置
+4. 加入任务队列并在 `任务` 页面查看进度
 
-### Desktop App (Recommended) / 桌面版（推荐）
+### 转换页面
 
-1. Open `Apple Music Downloader` from `Applications`
-2. Log in with your Apple Music account inside the app, or import your browser session
-3. Paste one or more Apple Music URLs
-4. Review output path and download preferences
-5. Start the queue and monitor progress in the app
+1. 选择输入模式：`文件` 或 `目录`
+2. 选择输入路径
+3. 选择输出目录
+4. 选择输出格式：`FLAC` 或 `MP3`
+5. 加入转换队列
 
-Desktop app focus:
+评论字段会统一写入：
 
-桌面版当前重点：
+`软件纯免费开源，无病毒，无额外广告，请确保你是从 GitHub @Mrgu2 下载的该软件。`
 
-- Songs, albums, and playlists
-- In-app login plus browser session import
-- Queue-based downloads
-- Local logs and diagnostics export
-- AAC by default, external wrapper for `ALAC / Dolby Atmos`
+## 构建说明
 
-### CLI Quick Start (Advanced Users) / CLI 快速入口（高级用户）
-
-```bash
-gamdl [OPTIONS] URLS...
-```
-
-For full CLI details, keep reading the remaining CLI sections below.
-
-完整的 CLI 细节说明请继续阅读下面保留的命令行参考部分。
-
-### Supported URL Types / 支持的链接类型
-
-- Songs / 单曲
-- Albums (Public/Library) / 专辑（公开库 / 资料库）
-- Playlists (Public/Library) / 歌单（公开库 / 资料库）
-- Music Videos / 音乐视频
-- Artists / 艺人页
-- Post Videos / Post 视频
-- Apple Music Classical / 古典音乐链接
-
-### Examples / 示例
-
-**Download a song / 下载单曲：**
+### macOS 本地构建
 
 ```bash
-gamdl "https://music.apple.com/us/album/never-gonna-give-you-up-2022-remaster/1624945511?i=1624945512"
+uv sync --extra desktop-build
+bash scripts/build-macos-app.sh
 ```
 
-**Download an album / 下载专辑：**
-
-```bash
-gamdl "https://music.apple.com/us/album/whenever-you-need-somebody-2022-remaster/1624945511"
-```
-
-**Download from an artist / 从艺人页下载：**
-
-```bash
-gamdl "https://music.apple.com/us/artist/rick-astley/669771"
-```
-
-**Interactive Prompt Controls / 交互提示按键：**
-
-| Key            | Action            |
-| -------------- | ----------------- |
-| **Arrow keys** | Move selection    |
-| **Space**      | Toggle selection  |
-| **Ctrl + A**   | Select all        |
-| **Enter**      | Confirm selection |
-
-## ⚙️ Configuration
-
-Configure Gamdl using command-line arguments or a config file.
-
-**Config file location:**
-
-- Linux: `~/.gamdl/config.ini`
-- Windows: `%USERPROFILE%\.gamdl\config.ini`
-
-The file is created automatically on first run. Command-line arguments override config values.
-
-### Configuration Options
-
-| Option                          | Description                                                       | Default                                        |
-| ------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------- |
-| **General Options**             |                                                                   |                                                |
-| `--read-urls-as-txt`, `-r`      | Read URLs from text files                                         | `false`                                        |
-| `--config-path`                 | Config file path                                                  | `<home>/.gamdl/config.ini`                     |
-| `--log-level`                   | Logging level                                                     | `INFO`                                         |
-| `--log-file`                    | Log file path                                                     | -                                              |
-| `--no-exceptions`               | Don't print exceptions                                            | `false`                                        |
-| `--no-config-file`, `-n`        | Don't use a config file                                           | `false`                                        |
-| **Apple Music Options**         |                                                                   |                                                |
-| `--cookies-path`, `-c`          | Cookies file path                                                 | `./cookies.txt`                                |
-| `--wrapper-account-url`         | Wrapper account URL                                               | `http://127.0.0.1:30020`                       |
-| `--language`, `-l`              | Metadata language                                                 | `en-US`                                        |
-| **Output Options**              |                                                                   |                                                |
-| `--output-path`, `-o`           | Output directory path                                             | `/Users/wenjiegu/Downloads`                    |
-| `--temp-path`                   | Temporary directory path                                          | `.`                                            |
-| `--wvd-path`                    | .wvd file path                                                    | -                                              |
-| `--overwrite`                   | Overwrite existing files                                          | `false`                                        |
-| `--save-cover`, `--no-save-cover` | Save cover as separate file                                     | `true`                                         |
-| `--save-playlist`               | Save M3U8 playlist file                                           | `false`                                        |
-| **Download Options**            |                                                                   |                                                |
-| `--artist-auto-select`          | Automatically select artist content to download (artist URLs)     | -                                              |
-| `--nm3u8dlre-path`              | N_m3u8DL-RE executable path                                       | `N_m3u8DL-RE`                                  |
-| `--mp4decrypt-path`             | mp4decrypt executable path                                        | `mp4decrypt`                                   |
-| `--ffmpeg-path`                 | FFmpeg executable path                                            | `ffmpeg`                                       |
-| `--mp4box-path`                 | MP4Box executable path                                            | `MP4Box`                                       |
-| `--use-wrapper`                 | Use wrapper                                                       | `false`                                        |
-| `--wrapper-decrypt-ip`          | Wrapper decryption server IP                                      | `127.0.0.1:10020`                              |
-| `--download-mode`               | Download mode                                                     | `ytdlp`                                        |
-| `--cover-format`                | Cover format                                                      | `jpg`                                          |
-| **Template Options**            |                                                                   |                                                |
-| `--album-folder-template`       | Album folder template                                             | `{album_artist}/{album}`                       |
-| `--compilation-folder-template` | Compilation folder template                                       | `Compilations/{album}`                         |
-| `--no-album-folder-template`    | No album folder template                                          | `{artist}/Unknown Album`                       |
-| `--single-disc-file-template`   | Single disc file template                                         | `{track:02d} {title}`                          |
-| `--multi-disc-file-template`    | Multi disc file template                                          | `{disc}-{track:02d} {title}`                   |
-| `--no-album-file-template`      | No album file template                                            | `{title}`                                      |
-| `--playlist-file-template`      | Playlist file template                                            | `Playlists/{playlist_artist}/{playlist_title}` |
-| `--date-tag-template`           | Date tag template                                                 | `%Y-%m-%dT%H:%M:%SZ`                           |
-| `--exclude-tags`                | Comma-separated tags to exclude                                   | -                                              |
-| `--cover-size`                  | Cover size in pixels                                              | `max available`                                |
-| `--truncate`                    | Max filename length                                               | -                                              |
-| **Song Options**                |                                                                   |                                                |
-| `--song-codec-priority`         | Comma-separated codec priority                                    | `aac-legacy`                                   |
-| `--synced-lyrics-format`        | Synced lyrics format                                              | `lrc`                                          |
-| `--no-synced-lyrics`            | Don't download synced lyrics                                      | `false`                                        |
-| `--synced-lyrics-only`          | Download only synced lyrics                                       | `false`                                        |
-| `--use-album-date`              | Use album release date for songs                                  | `false`                                        |
-| `--fetch-extra-tags`            | Fetch extra tags from preview (normalization and smooth playback) | `false`                                        |
-| **Music Video Options**         |                                                                   |                                                |
-| `--music-video-codec-priority`  | Comma-separated codec priority                                    | `h264,h265`                                    |
-| `--music-video-remux-mode`      | Remux mode                                                        | `ffmpeg`                                       |
-| `--music-video-remux-format`    | Music video remux format                                          | `m4v`                                          |
-| `--music-video-resolution`      | Max music video resolution                                        | `1080p`                                        |
-| **Post Video Options**          |                                                                   |                                                |
-| `--uploaded-video-quality`      | Post video quality                                                | `best`                                         |
-
-
-### Template Variables
-
-**Tags for templates and exclude-tags:**
-
-- `album`, `album_artist`, `album_id`
-- `artist`, `artist_id`
-- `composer`, `composer_id`
-- `date` (supports strftime format: `{date:%Y}`)
-- `disc`, `disc_total`
-- `media_type`
-- `playlist_artist`, `playlist_id`, `playlist_title`, `playlist_track`
-- `title`, `title_id`
-- `track`, `track_total`
-
-**Tags for exclude-tags only:**
-
-- `album_sort`, `artist_sort`, `composer_sort`, `title_sort`
-- `comment`, `compilation`, `copyright`, `cover`, `gapless`, `genre`, `genre_id`, `lyrics`, `rating`, `storefront`, `xid`
-- `all` (special: skip all tagging)
-
-### Logging Level
-
-- `DEBUG`, `INFO`, `WARNING`, `ERROR`
-
-### Download Mode
-
-- `ytdlp`, `nm3u8dlre`
-
-### Remux Mode
-
-- `ffmpeg`
-- `mp4box` - Preserve the original closed caption track in music videos and some other minor metadata
-
-### Cover Format
-
-- `jpg`
-- `png`
-- `raw` - Raw format as provided by the artist (requires `save_cover` to be enabled as it doesn't embed covers into files)
-
-### Metadata Language
-
-Use ISO 639-1 language codes (e.g., `en-US`, `es-ES`, `ja-JP`, `pt-BR`). Don't always work for music videos.
-
-### Song Codecs
-
-**Stable:**
-
-- `aac-legacy` - AAC 256kbps 44.1kHz
-- `aac-he-legacy` - AAC-HE 64kbps 44.1kHz
-
-**Experimental** (may not work due to API limitations):
-
-- `aac` - AAC 256kbps up to 48kHz
-- `aac-he` - AAC-HE 64kbps up to 48kHz
-- `aac-binaural` - AAC 256kbps binaural
-- `aac-downmix` - AAC 256kbps downmix
-- `aac-he-binaural` - AAC-HE 64kbps binaural
-- `aac-he-downmix` - AAC-HE 64kbps downmix
-- `atmos` - Dolby Atmos 768kbps
-- `ac3` - AC3 640kbps
-- `alac` - ALAC up to 24-bit/192kHz (unsupported)
-- `ask` - Interactive experimental codec selection
-
-### Synced Lyrics Format
-
-- `lrc`
-- `srt` - SubRip subtitle format (more accurate timing)
-- `ttml` - Native Apple Music format (not compatible with most media players)
-
-### Music Video Codecs
-
-- `h264`
-- `h265`
-- `ask` - Interactive codec selection
-
-### Music Video Resolutions
-
-- H.264: `240p`, `360p`, `480p`, `540p`, `720p`, `1080p`
-- H.265 only: `1440p`, `2160p`
-
-### Music Video Remux Formats
-
-- `m4v`, `mp4`
-
-### Post Video Quality
-
-- `best` - Up to 1080p with AAC 256kbps
-- `ask` - Interactive quality selection
-
-### Artist Auto-Select Options
-
-- `main-albums`
-- `compilation-albums`
-- `live-albums`
-- `singles-eps`
-- `all-albums`
-- `top-songs`
-- `music-videos`
-
-## ⚙️ Wrapper / Wrapper（ALAC / Atmos）
-
-Use the [wrapper](https://github.com/WorldObservationLog/wrapper) to download songs in ALAC and other experimental codecs without API limitations. Cookies are not required when using the wrapper.
-
-如果你需要 `ALAC` 或其他实验音质，可以配合 [wrapper](https://github.com/WorldObservationLog/wrapper) 使用。使用 wrapper 时通常不再依赖浏览器 cookies。
-
-### Setup Instructions / 安装步骤
-
-1. **Start the wrapper server** - Run the wrapper server
-2. **Enable wrapper in Gamdl** - Use `--use-wrapper` flag or set `use_wrapper = true` in config
-3. **Run Gamdl** - Download as usual with the wrapper enabled
-
-## 🛠️ Desktop Build & Development / 桌面版构建与开发
-
-This section is for local desktop development, packaging, and diagnostics.
-
-这一节面向桌面版的本地开发、打包和诊断。
-
-### Run During Development / 开发时运行
-
-Run the desktop app during development:
-
-开发时可直接启动桌面版：
-
-```bash
-uv run python -m gamdl.desktop_app
-```
-
-If you only want the local HTTP UI for development, you can still run:
-
-如果你只想启动本地 HTTP GUI 进行开发，也可以运行：
-
-```bash
-uv run python -m gamdl.web_gui
-```
-
-### Build / 打包
-
-Build a macOS `.app` and `.dmg`:
-
-构建 macOS `.app` 和 `.dmg`：
-
-```bash
-./scripts/build-macos-app.sh
-```
-
-Build outputs:
-
-构建产物位置：
+构建产物：
 
 ```text
 dist/Apple Music Downloader.app
 dist/Apple Music Downloader.dmg
 ```
 
-The packaged app already includes the macOS app icon.
+### Windows 构建
 
-打包产物已经包含 macOS 应用图标。
+推荐两种方式：
 
-Optional signing and notarization:
+1. 在 Windows 环境本地构建
+2. 推送到 GitHub 后使用仓库内置 workflow 自动构建
 
-可选的签名与 notarization：
+现有 workflow：
 
-- Set `APPLE_DEVELOPER_IDENTITY` before building to sign the `.app`
-- Set `APPLE_NOTARY_PROFILE` before building to submit the generated `.dmg` with `notarytool`
-- 构建前设置 `APPLE_DEVELOPER_IDENTITY`，可以对 `.app` 签名
-- 构建前设置 `APPLE_NOTARY_PROFILE`，可以用 `notarytool` 提交生成的 `.dmg`
+- [Build Windows Desktop App](https://github.com/Mrgu2/gamdl/actions/workflows/build-windows.yml)
 
-### Desktop Storage / 桌面版本地存储
+它会：
 
-The desktop app stores its settings, session data, logs, diagnostics, and temporary files under:
+- 安装依赖
+- 跑全量 `unittest`
+- 使用 `Apple Music Downloader Windows.spec` 打包
+- 上传 `apple-music-downloader-windows` artifact
 
-桌面版会把设置、登录态、日志、诊断包和临时文件保存到：
+如果你是在 Windows 本地构建，可参考：
+
+```bash
+uv sync --extra desktop-build
+uv run python -m unittest discover -s tests
+uv run pyinstaller --noconfirm "Apple Music Downloader Windows.spec"
+```
+
+## 开发与验证
+
+常用本地验证命令：
+
+```bash
+uv run python -m unittest discover -s tests
+uv run python -m unittest tests.test_web_gui
+uv run python -m unittest tests.test_conversion
+```
+
+开发时启动桌面版：
+
+```bash
+uv run python -m gamdl.desktop_app
+```
+
+## CLI 说明
+
+这个仓库仍然保留上游 `gamdl` CLI 能力，但当前 README 不再复制整份上游命令参考，避免桌面版文档被淹没。
+
+如果你是高级用户，可以直接查看：
+
+- 上游 CLI 项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
+- 当前源码仓库：[Mrgu2/gamdl](https://github.com/Mrgu2/gamdl)
+
+命令行入口仍然可用：
+
+```bash
+gamdl --help
+```
+
+## 本地数据目录
+
+### macOS 桌面版
 
 ```text
 ~/Library/Application Support/Apple Music Downloader
 ```
 
-This is separate from the CLI `config.ini`, so desktop changes won't overwrite your manual CLI defaults.
+这里会保存：
 
-这套桌面版存储和 CLI 的 `config.ini` 是分开的，不会覆盖你手动维护的 CLI 配置。
+- 设置
+- 登录态
+- 日志
+- 诊断包
+- 临时文件
 
-The desktop app remembers:
+这套桌面版数据与 CLI 的配置文件分离，不会覆盖你自己的命令行配置。
 
-桌面版会记住：
+## 致谢
 
-- Output path
-- Wrapper decrypt address
-- Song codec
-- Save cover
-- Log level
-- Browser import toggle
-- Setup completion status
-
-First-run desktop defaults are:
-
-桌面版首启默认值：
-
-- Output path: `~/Downloads/Apple Music Downloader`
-- Song codec: `aac-legacy`
-- Save cover: `true`
-- Language: `zh-CN`
-- Wrapper enabled: `false`
-- Wrapper decrypt address: `127.0.0.1:10022`
-
-### Desktop Limitations / 桌面版当前限制
-
-- macOS only
-- Songs, albums, and playlists only
-- AAC works out of the box
-- ALAC / Dolby Atmos require an external wrapper
-- Music videos, uploaded videos, and other advanced CLI paths are still CLI-oriented
-
-- 仅支持 macOS
-- 当前只开放歌曲、专辑、歌单
-- AAC 开箱即用
-- ALAC / 杜比全景声需要外部 wrapper
-- MV、上传视频和更多高级下载路径仍以 CLI 为主
-
-## 🧾 Additional CLI Reference / 更多命令行参考
-
-The remaining sections below are primarily CLI reference inherited from upstream Gamdl.
-
-下面保留的是原始 Gamdl 的 CLI 详细参考，主要服务高级用户和脚本使用场景。
-
-## 🐍 Embedding
-
-Use Gamdl as a library in your Python projects:
-
-```python
-import asyncio
-
-from gamdl.api import AppleMusicApi, ItunesApi
-from gamdl.downloader import (
-    AppleMusicBaseDownloader,
-    AppleMusicDownloader,
-    AppleMusicMusicVideoDownloader,
-    AppleMusicSongDownloader,
-    AppleMusicUploadedVideoDownloader,
-)
-from gamdl.interface import (
-    AppleMusicInterface,
-    AppleMusicMusicVideoInterface,
-    AppleMusicSongInterface,
-    AppleMusicUploadedVideoInterface,
-)
-
-async def main():
-    # Create AppleMusicApi instance (from cookies or wrapper)
-    apple_music_api = await AppleMusicApi.create_from_netscape_cookies(
-        cookies_path="cookies.txt",
-    )
-    itunes_api = ItunesApi(
-        apple_music_api.storefront,
-        apple_music_api.language,
-    )
-
-    # Check subscription
-    assert apple_music_api.active_subscription
-
-    # Set up interfaces
-    interface = AppleMusicInterface(apple_music_api, itunes_api)
-    song_interface = AppleMusicSongInterface(interface)
-    music_video_interface = AppleMusicMusicVideoInterface(interface)
-    uploaded_video_interface = AppleMusicUploadedVideoInterface(interface)
-
-    # Set up base downloader and specialized downloaders
-    base_downloader = AppleMusicBaseDownloader()
-    song_downloader = AppleMusicSongDownloader(
-        base_downloader=base_downloader,
-        interface=song_interface,
-    )
-    music_video_downloader = AppleMusicMusicVideoDownloader(
-        base_downloader=base_downloader,
-        interface=music_video_interface,
-    )
-    uploaded_video_downloader = AppleMusicUploadedVideoDownloader(
-        base_downloader=base_downloader,
-        interface=uploaded_video_interface,
-    )
-
-    # Main downloader
-    downloader = AppleMusicDownloader(
-        interface=interface,
-        base_downloader=base_downloader,
-        song_downloader=song_downloader,
-        music_video_downloader=music_video_downloader,
-        uploaded_video_downloader=uploaded_video_downloader,
-    )
-
-    # Download a song
-    url = "https://music.apple.com/us/album/never-gonna-give-you-up-2022-remaster/1624945511?i=1624945512"
-    url_info = downloader.get_url_info(url)
-    if url_info:
-        download_queue = await downloader.get_download_queue(url_info)
-        if download_queue:
-            for download_item in download_queue:
-                await downloader.download(download_item)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details
-
-## 🤝 Contributing
-
-Currently, I'm not interested in reviewing pull requests that change or add features. Only critical bug fixes will be considered. However, feel free to open issues for bugs or feature requests.
+- 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
+- 当前 fork 与桌面版维护者：[Mrgu2](https://github.com/Mrgu2)
+- 外部 wrapper 项目：[WorldObservationLog/wrapper](https://github.com/WorldObservationLog/wrapper)

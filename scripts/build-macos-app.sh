@@ -8,7 +8,6 @@ APP_NAME="Apple Music Downloader"
 APP_PATH="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 ICON_PATH="$ROOT_DIR/assets/macos/app-icon.icns"
-DMG_BACKGROUND_SCRIPT="$ROOT_DIR/scripts/generate-dmg-background.py"
 DMG_NOTE_NAME="IMPORTANT - First Launch ／ 首次启动说明.txt"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -25,18 +24,30 @@ mkdir -p "$DIST_DIR"
 uv sync --extra desktop-build
 "$ROOT_DIR/scripts/generate-macos-icon.sh"
 
+PYINSTALLER_ARGS=(
+  --noconfirm
+  --clean
+  --windowed
+  --name "$APP_NAME"
+  --icon "$ICON_PATH"
+  --collect-all webview
+  --hidden-import webview.platforms.cocoa
+  --hidden-import AppKit
+  --hidden-import WebKit
+  --add-data "README.md:."
+)
+
+if [[ -f "$ROOT_DIR/assets/macos/ffmpeg" ]]; then
+  chmod +x "$ROOT_DIR/assets/macos/ffmpeg"
+fi
+
 uv run pyinstaller \
-  --noconfirm \
-  --clean \
-  --windowed \
-  --name "$APP_NAME" \
-  --icon "$ICON_PATH" \
-  --collect-all webview \
-  --hidden-import webview.platforms.cocoa \
-  --hidden-import AppKit \
-  --hidden-import WebKit \
-  --add-data "README.md:." \
+  "${PYINSTALLER_ARGS[@]}" \
   gamdl/desktop_app.py
+
+if [[ -f "$ROOT_DIR/assets/macos/ffmpeg" ]]; then
+  uv run python "$ROOT_DIR/scripts/bundle_macos_ffmpeg.py" "$APP_PATH" "$ROOT_DIR/assets/macos/ffmpeg"
+fi
 
 if [[ -n "${APPLE_DEVELOPER_IDENTITY:-}" ]]; then
   codesign \
@@ -48,24 +59,13 @@ if [[ -n "${APPLE_DEVELOPER_IDENTITY:-}" ]]; then
 fi
 
 DMG_STAGE_DIR="$(mktemp -d "$BUILD_DIR/dmg-stage.XXXXXX")"
-DMG_MOUNT_POINT="$(mktemp -d "$BUILD_DIR/dmg-mount.XXXXXX")"
-DMG_RW_PATH="$BUILD_DIR/$APP_NAME-temp.dmg"
-DMG_BACKGROUND_DIR="$DMG_STAGE_DIR/.background"
-DMG_BACKGROUND_PATH="$DMG_BACKGROUND_DIR/background.png"
 DMG_NOTE_PATH="$DMG_STAGE_DIR/$DMG_NOTE_NAME"
 
 cleanup() {
-  if mount | grep -Fq "on $DMG_MOUNT_POINT "; then
-    hdiutil detach "$DMG_MOUNT_POINT" -force >/dev/null 2>&1 || true
-  fi
-  rm -rf "$DMG_STAGE_DIR" "$DMG_MOUNT_POINT"
+  rm -rf "$DMG_STAGE_DIR"
 }
 
 trap cleanup EXIT
-
-mkdir -p "$DMG_BACKGROUND_DIR"
-uv run python "$DMG_BACKGROUND_SCRIPT" "$DMG_BACKGROUND_PATH"
-SetFile -a V "$DMG_BACKGROUND_DIR"
 
 cat > "$DMG_NOTE_PATH" <<'EOF'
 Apple Music Downloader
@@ -102,67 +102,15 @@ Project page: https://github.com/Mrgu2/gamdl
 EOF
 
 ditto "$APP_PATH" "$DMG_STAGE_DIR/$APP_NAME.app"
-osascript <<EOF
-set targetFolder to POSIX file "$DMG_STAGE_DIR" as alias
-tell application "Finder"
-  make new alias file at targetFolder to POSIX file "/Applications"
-end tell
-EOF
-DMG_APPLICATIONS_ALIAS="$(find "$DMG_STAGE_DIR" -maxdepth 1 -type f ! -name "$DMG_NOTE_NAME" -print -quit)"
-mv "$DMG_APPLICATIONS_ALIAS" "$DMG_STAGE_DIR/Applications"
+ln -s /Applications "$DMG_STAGE_DIR/Applications"
 
 hdiutil create \
   -volname "$APP_NAME" \
   -srcfolder "$DMG_STAGE_DIR" \
   -ov \
-  -format UDRW \
-  -fs HFS+ \
-  "$DMG_RW_PATH"
-
-hdiutil attach \
-  "$DMG_RW_PATH" \
-  -mountpoint "$DMG_MOUNT_POINT" \
-  -noautoopen \
-  -readwrite \
-  -noverify >/dev/null
-
-osascript <<EOF
-set backgroundAlias to POSIX file "$DMG_MOUNT_POINT/.background/background.png" as alias
-tell application "Finder"
-  tell disk "$APP_NAME"
-    open
-    delay 1
-    set theWindow to container window
-    set current view of theWindow to icon view
-    set toolbar visible of theWindow to false
-    set statusbar visible of theWindow to false
-    set bounds of theWindow to {140, 120, 860, 600}
-    set theViewOptions to icon view options of theWindow
-    set arrangement of theViewOptions to arranged by name
-    set icon size of theViewOptions to 112
-    set text size of theViewOptions to 13
-    set background picture of theViewOptions to backgroundAlias
-    update without registering applications
-    delay 2
-    close
-    open
-    delay 1
-  end tell
-end tell
-EOF
-
-chmod -Rf go-w "$DMG_MOUNT_POINT"
-sync
-hdiutil detach "$DMG_MOUNT_POINT" >/dev/null
-
-hdiutil convert \
-  "$DMG_RW_PATH" \
-  -ov \
   -format UDZO \
   -imagekey zlib-level=9 \
-  -o "$DMG_PATH" >/dev/null
-
-rm -f "$DMG_RW_PATH"
+  "$DMG_PATH" >/dev/null
 
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$DMG_PATH" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait

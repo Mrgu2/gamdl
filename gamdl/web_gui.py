@@ -23,12 +23,15 @@ from .app import (
     AppSettingsStore,
     AuthManager,
     BrowserType,
+    ConversionJobSpec,
+    ConversionService,
     DesktopFileActions,
     DiagnosticsService,
     DownloadJob,
     DownloadService,
     WrapperManager,
     configure_app_logging,
+    resolve_executable,
 )
 from .app.settings import AppSettings
 from .desktop_runtime import detect_desktop_runtime
@@ -42,6 +45,7 @@ DEFAULT_PORT = 8765
 GUI_SETTINGS_DEFAULTS = AppSettingsStore(AppPaths()).defaults().__dict__
 SUPPORTED_BROWSER_IMPORTS = [browser.value for browser in BrowserType]
 SUPPORTED_DOWNLOAD_KINDS = {"song", "album", "playlist", "library-playlist", "library-albums"}
+SUPPORTED_CONVERSION_FORMATS = {"flac", "mp3"}
 DEFAULT_WRAPPER_DECRYPT_IP = "127.0.0.1:10022"
 
 
@@ -112,6 +116,14 @@ def build_download_command(payload: dict[str, Any]) -> list[str]:
     return cmd
 
 
+def build_conversion_command(payload: dict[str, Any]) -> list[str]:
+    cmd = [payload.get("runner", "internal-convert")]
+    for key in ("input_mode", "input_path", "output_path", "target_format", "overwrite"):
+        if key in payload:
+            cmd.append(f"{key}={payload[key]}")
+    return cmd
+
+
 @dataclass
 class Job:
     id: str
@@ -119,6 +131,7 @@ class Job:
     url_preview: list[dict[str, Any]]
     payload: dict[str, Any]
     command: list[str]
+    kind: str = "download"
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -156,6 +169,14 @@ class JobManager:
         self.worker.start()
 
     def create_job(self, payload: dict[str, Any]) -> Job:
+        kind = str(payload.get("kind") or "download").strip().lower()
+        if kind == "download":
+            return self._create_download_job(payload)
+        if kind == "convert":
+            return self._create_conversion_job(payload)
+        raise ValueError("不支持的任务类型。")
+
+    def _create_download_job(self, payload: dict[str, Any]) -> Job:
         urls = parse_url_input(payload.get("url_text", ""))
         if not urls:
             raise ValueError("请至少输入一个 Apple Music 链接。")
@@ -169,10 +190,57 @@ class JobManager:
         settings = self.settings_store.save(payload)
         job = Job(
             id=secrets.token_hex(8),
+            kind="download",
             urls=urls,
             url_preview=url_preview,
             payload={**settings.__dict__},
             command=build_download_command({**settings.__dict__, "urls": urls}),
+        )
+        with self.jobs_lock:
+            self.jobs[job.id] = job
+        self.job_queue.put(job.id)
+        return job
+
+    def _create_conversion_job(self, payload: dict[str, Any]) -> Job:
+        input_mode = str(payload.get("input_mode") or "").strip()
+        if input_mode not in {"file", "directory"}:
+            raise ValueError("请选择输入模式：文件或目录。")
+
+        input_path_raw = str(payload.get("input_path") or "").strip()
+        if not input_path_raw:
+            raise ValueError("请先选择输入文件或目录。")
+        input_path = Path(input_path_raw).expanduser()
+        if not input_path.exists():
+            raise ValueError("输入路径不存在，请重新选择。")
+        if input_mode == "file" and not input_path.is_file():
+            raise ValueError("文件模式下请选择有效文件。")
+        if input_mode == "directory" and not input_path.is_dir():
+            raise ValueError("目录模式下请选择有效文件夹。")
+
+        target_format = str(payload.get("target_format") or "").strip().lower()
+        if target_format not in SUPPORTED_CONVERSION_FORMATS:
+            raise ValueError("请选择有效的转换格式。")
+
+        settings = self.settings_store.save(
+            {
+                "output_path": payload.get("output_path", ""),
+                "overwrite": payload.get("overwrite", False),
+            }
+        )
+        normalized_input = str(input_path.resolve())
+        job_payload = {
+            **settings.__dict__,
+            "input_mode": input_mode,
+            "input_path": normalized_input,
+            "target_format": target_format,
+        }
+        job = Job(
+            id=secrets.token_hex(8),
+            kind="convert",
+            urls=[],
+            url_preview=[],
+            payload=job_payload,
+            command=build_conversion_command(job_payload),
         )
         with self.jobs_lock:
             self.jobs[job.id] = job
@@ -211,30 +279,12 @@ class JobManager:
         job.status = "running"
         job.started_at = time.time()
         try:
-            token = self.auth_manager.get_media_user_token()
-            service = DownloadService(
-                media_user_token=token,
-                log_callback=job.append_log,
-                paths=self.paths,
-            )
-            result = service.run_sync(
-                DownloadJob(
-                    urls=job.urls,
-                    output_path=job.payload["output_path"],
-                    overwrite=job.payload["overwrite"],
-                    save_cover=job.payload["save_cover"],
-                    log_level=job.payload["log_level"],
-                    song_codec=job.payload["song_codec"],
-                    use_wrapper=job.payload["use_wrapper"],
-                    wrapper_decrypt_ip=job.payload["wrapper_decrypt_ip"],
-                )
-            )
-            job.result = result.to_dict()
-            job.status = "completed" if result.errors == 0 else "failed"
-            job.return_code = 0 if result.errors == 0 else 1
-            if result.errors:
-                job.error_category = "download"
-                job.error_message = "任务包含失败项，请查看日志。"
+            if job.kind == "download":
+                self._run_download_job(job)
+            elif job.kind == "convert":
+                self._run_conversion_job(job)
+            else:
+                raise RuntimeError(f"未知任务类型：{job.kind}")
         except Exception as exc:
             job.append_log(str(exc))
             job.status = "failed"
@@ -243,6 +293,50 @@ class JobManager:
             job.error_message = str(exc)
         finally:
             job.finished_at = time.time()
+
+    def _run_download_job(self, job: Job) -> None:
+        token = self.auth_manager.get_media_user_token()
+        service = DownloadService(
+            media_user_token=token,
+            log_callback=job.append_log,
+            paths=self.paths,
+        )
+        result = service.run_sync(
+            DownloadJob(
+                urls=job.urls,
+                output_path=job.payload["output_path"],
+                overwrite=job.payload["overwrite"],
+                save_cover=job.payload["save_cover"],
+                log_level=job.payload["log_level"],
+                song_codec=job.payload["song_codec"],
+                use_wrapper=job.payload["use_wrapper"],
+                wrapper_decrypt_ip=job.payload["wrapper_decrypt_ip"],
+            )
+        )
+        job.result = result.to_dict()
+        job.status = "completed" if result.errors == 0 else "failed"
+        job.return_code = 0 if result.errors == 0 else 1
+        if result.errors:
+            job.error_category = "download"
+            job.error_message = "任务包含失败项，请查看日志。"
+
+    def _run_conversion_job(self, job: Job) -> None:
+        service = ConversionService(log_callback=job.append_log)
+        result = service.run(
+            ConversionJobSpec(
+                input_mode=job.payload["input_mode"],
+                input_path=job.payload["input_path"],
+                output_path=job.payload["output_path"],
+                target_format=job.payload["target_format"],
+                overwrite=job.payload["overwrite"],
+            )
+        )
+        job.result = result.to_dict()
+        job.status = "completed" if result.errors == 0 else "failed"
+        job.return_code = 0 if result.errors == 0 else 1
+        if result.errors:
+            job.error_category = "conversion"
+            job.error_message = "转换任务包含失败项，请查看日志。"
 
 
 class WebGuiHandler(BaseHTTPRequestHandler):
@@ -293,6 +387,9 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                     "version": __version__,
                     "original_project_name": "Gamdl (Glomatico's Apple Music Downloader)",
                     "original_project_url": "https://github.com/glomatico/gamdl",
+                    "modified_by": "@Mrgu2",
+                    "modified_project_url": "https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download",
+                    "download_safety_note": "请确保从 GitHub @Mrgu2 下载该软件，以保证软件安全、没有后门且来源可核验。",
                     "alac_max_spec": "24-bit / 192 kHz",
                     "alac_spec_note": "具体取决于歌曲本身是否提供对应规格。",
                     "supported_browser_imports": SUPPORTED_BROWSER_IMPORTS,
@@ -354,23 +451,25 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/desktop/select-folder":
-            if not self.server.folder_picker:
-                self._send_json({"error": "当前环境不支持原生文件夹选择器。"}, HTTPStatus.BAD_REQUEST)
-                return
-            try:
-                selected_path = self.server.folder_picker()
-            except Exception as exc:
-                self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
-                return
-            if not selected_path:
-                self._send_json({"selected": False})
-                return
-            try:
-                output_path = self.server.settings_store.validate_output_path(selected_path)
-            except ValueError as exc:
-                self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
-                return
-            self._send_json({"selected": True, "output_path": output_path})
+            self._handle_output_folder_selection()
+            return
+
+        if parsed.path == "/api/desktop/select-file":
+            self._handle_existing_path_selection(
+                picker=self.server.file_picker,
+                unsupported_message="当前环境不支持原生文件选择器。",
+                response_key="input_path",
+                expected_kind="file",
+            )
+            return
+
+        if parsed.path == "/api/desktop/select-input-folder":
+            self._handle_existing_path_selection(
+                picker=self.server.input_folder_picker,
+                unsupported_message="当前环境不支持原生输入目录选择器。",
+                response_key="input_path",
+                expected_kind="directory",
+            )
             return
 
         if parsed.path == "/api/jobs":
@@ -485,6 +584,62 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             summary[key] = summary.get(key, 0) + 1
         return summary
 
+    def _handle_output_folder_selection(self) -> None:
+        if not self.server.folder_picker:
+            self._send_json({"error": "当前环境不支持原生文件夹选择器。"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            selected_path = self.server.folder_picker()
+        except Exception as exc:
+            self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not selected_path:
+            self._send_json({"selected": False})
+            return
+        try:
+            output_path = self.server.settings_store.validate_output_path(selected_path)
+        except ValueError as exc:
+            self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"selected": True, "output_path": output_path})
+
+    def _handle_existing_path_selection(
+        self,
+        *,
+        picker: Callable[[], str | None] | None,
+        unsupported_message: str,
+        response_key: str,
+        expected_kind: str,
+    ) -> None:
+        if not picker:
+            self._send_json({"error": unsupported_message}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            selected_path = picker()
+        except Exception as exc:
+            self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not selected_path:
+            self._send_json({"selected": False})
+            return
+        try:
+            normalized = self._validate_existing_input_path(selected_path, expected_kind)
+        except ValueError as exc:
+            self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"selected": True, response_key: normalized})
+
+    @staticmethod
+    def _validate_existing_input_path(path: str, expected_kind: str) -> str:
+        candidate = Path(path).expanduser()
+        if not candidate.exists():
+            raise ValueError("所选输入路径不存在。")
+        if expected_kind == "file" and not candidate.is_file():
+            raise ValueError("请选择有效输入文件。")
+        if expected_kind == "directory" and not candidate.is_dir():
+            raise ValueError("请选择有效输入目录。")
+        return str(candidate.resolve())
+
     def _handle_job_file_action(
         self,
         path: str,
@@ -569,6 +724,8 @@ class WebGuiServer(ThreadingHTTPServer):
         paths: AppPaths,
         log_store: AppLogStore | None,
         folder_picker: Callable[[], str | None] | None = None,
+        file_picker: Callable[[], str | None] | None = None,
+        input_folder_picker: Callable[[], str | None] | None = None,
         file_actions: DesktopFileActions | None = None,
     ) -> None:
         super().__init__(server_address, handler_cls)
@@ -580,6 +737,8 @@ class WebGuiServer(ThreadingHTTPServer):
         self.diagnostics = DiagnosticsService(paths, self.settings_store, self.log_store)
         self.wrapper_manager = WrapperManager()
         self.folder_picker = folder_picker
+        self.file_picker = file_picker
+        self.input_folder_picker = input_folder_picker
         self.file_actions = file_actions or DesktopFileActions()
 
     def set_log_level(self, level: str) -> None:
@@ -587,9 +746,17 @@ class WebGuiServer(ThreadingHTTPServer):
             logging.getLogger(logger_name).setLevel(level)
 
     def runtime(self):
+        ffmpeg = resolve_executable("ffmpeg")
         return detect_desktop_runtime(
             folder_picker_supported=self.folder_picker is not None,
+            file_picker_supported=self.file_picker is not None,
             file_actions_supported=self.file_actions.supported,
+            conversion_supported=ffmpeg.available,
+            conversion_message=(
+                f"转换功能可用，ffmpeg 来源：{'内置' if ffmpeg.source == 'bundled' else '系统'}。"
+                if ffmpeg.available
+                else "当前环境缺少 ffmpeg，转换功能不可用。"
+            ),
         )
 
 
@@ -600,6 +767,8 @@ def create_server(
     paths: AppPaths | None = None,
     log_store: AppLogStore | None = None,
     folder_picker: Callable[[], str | None] | None = None,
+    file_picker: Callable[[], str | None] | None = None,
+    input_folder_picker: Callable[[], str | None] | None = None,
     file_actions: DesktopFileActions | None = None,
 ) -> WebGuiServer:
     return WebGuiServer(
@@ -608,6 +777,8 @@ def create_server(
         paths or AppPaths(),
         log_store or AppLogStore(),
         folder_picker=folder_picker,
+        file_picker=file_picker,
+        input_folder_picker=input_folder_picker,
         file_actions=file_actions,
     )
 
@@ -712,6 +883,22 @@ INDEX_HTML = """<!doctype html>
     .brand {
       padding: 12px 14px 16px;
       border-bottom: 1px solid var(--line);
+    }
+    .brand-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+    .brand-mark {
+      width: 58px;
+      height: 58px;
+      flex: 0 0 58px;
+      border-radius: 16px;
+      box-shadow: 0 12px 24px rgba(93, 1, 41, .16);
+      overflow: hidden;
+    }
+    .brand-copy {
+      min-width: 0;
     }
     .brand-kicker {
       font-size: 12px;
@@ -1472,14 +1659,40 @@ INDEX_HTML = """<!doctype html>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-kicker">Apple Music Downloader</div>
-        <h1>Apple Music Downloader</h1>
+        <div class="brand-head">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="brand-bg" x1="0%" y1="12%" x2="100%" y2="88%">
+                  <stop offset="0%" stop-color="#ff2a3f"/>
+                  <stop offset="52%" stop-color="#d7004e"/>
+                  <stop offset="100%" stop-color="#5a0056"/>
+                </linearGradient>
+                <linearGradient id="brand-fg" x1="12%" y1="8%" x2="82%" y2="92%">
+                  <stop offset="0%" stop-color="#fffefc"/>
+                  <stop offset="65%" stop-color="#f7dbe8"/>
+                  <stop offset="100%" stop-color="#efc3dc"/>
+                </linearGradient>
+              </defs>
+              <rect width="1024" height="1024" rx="184" fill="url(#brand-bg)"/>
+              <path d="M434 646V314L722 238V530" stroke="url(#brand-fg)" stroke-width="116" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="314" cy="628" r="104" fill="url(#brand-fg)"/>
+              <circle cx="626" cy="580" r="104" fill="url(#brand-fg)"/>
+              <path d="M442 612H582V694H654L512 834L370 694H442Z" fill="url(#brand-fg)"/>
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <div class="brand-kicker">免费 开源 纯净</div>
+            <h1>Apple Music Downloader</h1>
+          </div>
+        </div>
         <p>下载歌曲、专辑和歌单。默认支持 AAC；如果已经配置外部 wrapper，也可以使用 ALAC 和杜比全景声。</p>
       </div>
       <nav class="nav">
         <button class="nav-btn active" data-page="download">下载</button>
         <button class="nav-btn" data-page="account">账号</button>
         <button class="nav-btn" data-page="jobs">任务</button>
+        <button class="nav-btn" data-page="convert">转换</button>
         <button class="nav-btn" data-page="logs">日志</button>
         <button class="nav-btn" data-page="settings">设置</button>
         <button class="nav-btn" data-page="about">关于</button>
@@ -1578,6 +1791,58 @@ INDEX_HTML = """<!doctype html>
           </div>
           <div class="card-body">
             <div class="list" id="jobs-list"><div class="muted">还没有任务。</div></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="page-convert">
+        <article class="card">
+          <div class="card-head">
+            <h3>FFmpeg 本地转换</h3>
+            <button class="btn primary" id="submit-convert-btn">加入转换队列</button>
+          </div>
+          <div class="card-body grid">
+            <p class="lead" id="convert-copy">ffmpeg 转换，默认保持原采样率；无损格式保持原位深；封面与常见标签会被复制。</p>
+            <div class="grid two">
+              <div class="field">
+                <label for="convert-input-mode">输入路径类型</label>
+                <select id="convert-input-mode">
+                  <option value="file">文件</option>
+                  <option value="directory">目录</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="convert-target-format">输出格式</label>
+                <select id="convert-target-format">
+                  <option value="flac">FLAC（无损）</option>
+                  <option value="mp3">MP3（高质量有损）</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="convert-input-path">输入文件 / 目录</label>
+              <div class="path-picker">
+                <input id="convert-input-path" type="text" />
+                <button class="btn" id="select-convert-file-btn" type="button">选择文件</button>
+                <button class="btn" id="select-convert-input-folder-btn" type="button">选择目录</button>
+              </div>
+              <div class="muted" id="convert-input-copy">可以直接使用“选择文件”或“选择文件夹”填写转换输入路径。</div>
+            </div>
+            <div class="field">
+              <label for="convert-output-path">输出目录</label>
+              <div class="path-picker">
+                <input id="convert-output-path" type="text" />
+                <button class="btn" id="select-convert-output-btn" type="button">选择文件夹</button>
+              </div>
+              <div class="muted" id="convert-output-copy">转换输出目录默认跟随当前下载目录，也可以单独改。</div>
+            </div>
+            <div class="list-item">
+              <div class="list-head">
+                <strong>当前可用性</strong>
+                <span class="badge" id="convert-runtime-badge">检测中</span>
+              </div>
+              <div class="muted" id="convert-runtime-copy">正在检测 ffmpeg。</div>
+            </div>
           </div>
         </article>
       </section>
@@ -1685,7 +1950,7 @@ INDEX_HTML = """<!doctype html>
             <button class="btn" id="export-diagnostics-btn">导出诊断包</button>
           </div>
           <div class="card-body grid">
-            <p class="lead">Apple Music Downloader 用于下载歌曲、专辑和歌单。默认支持 AAC；如果已经配置外部 wrapper，也可以使用 ALAC 和杜比全景声。</p>
+            <p class="lead">Apple Music Downloader 用于下载歌曲、专辑和歌单。默认支持 AAC；如果已经配置外部 wrapper，也可以使用 ALAC 和杜比全景声。请确保从 GitHub 官方项目页下载，以保证来源可核验。</p>
             <div class="list" id="about-list"></div>
           </div>
         </article>
@@ -1776,6 +2041,7 @@ docker stop wrapper-latest-10022</pre>
         download: '下载',
         account: '账号',
         jobs: '任务',
+        convert: '转换',
         logs: '日志',
         settings: '设置',
         about: '关于',
@@ -2015,15 +2281,44 @@ docker stop wrapper-latest-10022</pre>
       list.innerHTML = jobs.map((job) => {
         const [statusLabel, statusClass] = badgeForStatus(job.status);
         const result = job.result || {};
+        const isConvert = job.kind === 'convert';
         const latestMediaPath = result.latest_media_path || '';
         const supportsFileActions = Boolean(state.runtime?.file_actions_supported);
         const canShowFileActions = supportsFileActions && (job.status === 'completed' || latestMediaPath);
         const fileActionHint = latestMediaPath
           ? `<div class="muted">最近成功文件：${escapeHtml(latestMediaPath)}</div>`
-          : '<div class="muted">当前任务没有成功下载的媒体文件，只能打开下载目录。</div>';
+          : `<div class="muted">当前${isConvert ? '转换' : '下载'}任务没有成功输出的媒体文件，只能打开输出目录。</div>`;
         const actions = job.status === 'queued'
           ? `<button class="btn" onclick="cancelJob('${job.id}')">取消</button>`
           : '';
+        const primaryMeta = isConvert
+          ? `
+            <div>
+              <strong>${job.payload.input_mode === 'directory' ? '目录转换' : '文件转换'}</strong>
+              <div class="muted">${new Date(job.created_at * 1000).toLocaleString()}</div>
+            </div>
+          `
+          : `
+            <div>
+              <strong>${job.urls.length} 个链接</strong>
+              <div class="muted">${new Date(job.created_at * 1000).toLocaleString()}</div>
+            </div>
+          `;
+        const detailCopy = isConvert
+          ? `<div class="muted">输入：${escapeHtml(job.payload.input_path || '')}<br>输出：${escapeHtml(job.payload.output_path || '')}<br>格式：${escapeHtml((job.payload.target_format || '').toUpperCase())}</div>`
+          : `<div class="muted">${job.urls.join('<br>')}</div>`;
+        const summaryBadges = isConvert
+          ? `
+              <span class="badge">成功 ${result.converted_files || 0}</span>
+              <span class="badge">跳过 ${result.skipped_files || 0}</span>
+              <span class="badge">文件 ${result.total_files || 0}</span>
+              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${result.errors || 0}</span>
+            `
+          : `
+              <span class="badge">成功 ${result.downloaded_items || 0}</span>
+              <span class="badge">跳过 ${result.skipped_items || 0}</span>
+              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${result.errors || 0}</span>
+            `;
         const fileActions = canShowFileActions
           ? `
             <div class="inline">
@@ -2045,17 +2340,15 @@ docker stop wrapper-latest-10022</pre>
         return `
           <div class="list-item">
             <div class="list-head">
-              <div>
-                <strong>${job.urls.length} 个链接</strong>
-                <div class="muted">${new Date(job.created_at * 1000).toLocaleString()}</div>
-              </div>
+              ${primaryMeta}
               <span class="${statusClass}">${statusLabel}</span>
             </div>
-            <div class="muted">${job.urls.join('<br>')}</div>
             <div class="inline">
-              <span class="badge">成功 ${result.downloaded_items || 0}</span>
-              <span class="badge">跳过 ${result.skipped_items || 0}</span>
-              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${result.errors || 0}</span>
+              <span class="badge">${isConvert ? '转换' : '下载'}</span>
+            </div>
+            ${detailCopy}
+            <div class="inline">
+              ${summaryBadges}
               ${actions}
             </div>
             ${fileActions}
@@ -2127,7 +2420,34 @@ docker stop wrapper-latest-10022</pre>
 
       document.getElementById('output-path-copy').textContent = runtime.output_path_message;
       document.getElementById('setup-output-path-copy').textContent = runtime.output_path_message;
+      document.getElementById('convert-output-copy').textContent = runtime.output_path_message;
+      document.getElementById('convert-input-copy').textContent = runtime.input_path_message;
       document.getElementById('open-file-application-field').style.display = runtime.platform === 'Windows' ? '' : 'none';
+      document.getElementById('convert-runtime-copy').textContent = runtime.conversion_message;
+      const convertRuntimeBadge = document.getElementById('convert-runtime-badge');
+      convertRuntimeBadge.textContent = runtime.conversion_supported ? '可用' : '不可用';
+      convertRuntimeBadge.className = runtime.conversion_supported ? 'badge success' : 'badge danger';
+
+      const convertInput = document.getElementById('convert-input-path');
+      convertInput.readOnly = runtime.file_picker_supported;
+      if (!runtime.file_picker_supported) {
+        convertInput.placeholder = '请输入完整输入文件或目录路径';
+      }
+      const convertOutput = document.getElementById('convert-output-path');
+      convertOutput.readOnly = runtime.folder_picker_supported;
+      if (!runtime.folder_picker_supported) {
+        convertOutput.placeholder = '请输入完整输出目录路径';
+      }
+
+      document.getElementById('select-convert-file-btn').disabled = !runtime.file_picker_supported;
+      document.getElementById('select-convert-file-btn').title = runtime.file_picker_supported ? '' : runtime.input_path_message;
+      document.getElementById('select-convert-input-folder-btn').disabled = !runtime.file_picker_supported;
+      document.getElementById('select-convert-input-folder-btn').title = runtime.file_picker_supported ? '' : runtime.input_path_message;
+      document.getElementById('select-convert-output-btn').disabled = !runtime.folder_picker_supported;
+      document.getElementById('select-convert-output-btn').title = runtime.folder_picker_supported ? '' : runtime.output_path_message;
+      document.getElementById('submit-convert-btn').disabled = !runtime.conversion_supported;
+      document.getElementById('submit-convert-btn').title = runtime.conversion_supported ? '' : runtime.conversion_message;
+      syncConvertMode();
       refreshJobs();
     }
 
@@ -2144,6 +2464,9 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('wrapper-decrypt-ip').value = settings.wrapper_decrypt_ip || DEFAULT_WRAPPER_DECRYPT_IP;
       document.getElementById('open-file-application').value = settings.open_file_application || '';
       document.getElementById('browser-import-enabled').value = String(settings.browser_import_enabled);
+      if (!document.getElementById('convert-output-path').value.trim()) {
+        document.getElementById('convert-output-path').value = settings.output_path || '';
+      }
       renderRuntime(runtime);
       renderWrapperStatus(wrapperStatus);
       syncSetupOverlay();
@@ -2156,6 +2479,9 @@ docker stop wrapper-latest-10022</pre>
       const defaultCodec = data.distribution_audio_default === 'aac-legacy' ? 'AAC' : (data.distribution_audio_default || '未知');
       const originalProjectName = data.original_project_name || 'Gamdl';
       const originalProjectUrl = data.original_project_url || 'https://github.com/glomatico/gamdl';
+      const modifiedBy = data.modified_by || '@Mrgu2';
+      const modifiedProjectUrl = data.modified_project_url || 'https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download';
+      const downloadSafetyNote = data.download_safety_note || '请确保从 GitHub @Mrgu2 下载该软件，以保证软件安全、没有后门且来源可核验。';
       const alacMaxSpec = data.alac_max_spec || '24-bit / 192 kHz';
       const alacSpecNote = data.alac_spec_note || '具体取决于歌曲本身是否提供对应规格。';
       const qualityMode = data.alac_mode === 'external-wrapper-only'
@@ -2165,6 +2491,8 @@ docker stop wrapper-latest-10022</pre>
       list.innerHTML = `
         <div class="list-item"><div class="list-head"><strong>版本</strong><span class="muted">${data.version}</span></div></div>
         <div class="list-item"><div class="list-head"><strong>项目来源</strong><span class="muted">改编自 ${originalProjectName}</span></div><div class="muted">原版项目地址：<a href="${originalProjectUrl}" target="_blank" rel="noreferrer">${originalProjectUrl}</a></div></div>
+        <div class="list-item"><div class="list-head"><strong>修改者</strong><span class="muted">${modifiedBy}</span></div><div class="muted">当前桌面版项目地址：<a href="${modifiedProjectUrl}" target="_blank" rel="noreferrer">${modifiedProjectUrl}</a></div></div>
+        <div class="list-item"><div class="list-head"><strong>下载安全提示</strong><span class="muted">请从 GitHub 获取</span></div><div class="muted">${downloadSafetyNote}</div></div>
         <div class="list-item"><div class="list-head"><strong>当前平台</strong><span class="muted">${runtime.platform || 'unknown'}</span></div></div>
         <div class="list-item"><div class="list-head"><strong>可导入的浏览器</strong><span class="muted">${browserImports}</span></div></div>
         <div class="list-item"><div class="list-head"><strong>支持的链接类型</strong><span class="muted">${kinds}</span></div></div>
@@ -2425,6 +2753,17 @@ docker stop wrapper-latest-10022</pre>
       };
     }
 
+    function collectConvertPayload() {
+      return {
+        kind: 'convert',
+        input_mode: document.getElementById('convert-input-mode').value,
+        input_path: document.getElementById('convert-input-path').value.trim(),
+        output_path: document.getElementById('convert-output-path').value.trim(),
+        target_format: document.getElementById('convert-target-format').value,
+        overwrite: document.getElementById('overwrite').value === 'true',
+      };
+    }
+
     function collectSetupPayload() {
       return {
         output_path: document.getElementById('setup-output-path').value.trim(),
@@ -2436,7 +2775,7 @@ docker stop wrapper-latest-10022</pre>
         method: 'POST',
         body: JSON.stringify(collectSettingsPayload()),
       });
-      renderSettings(data.settings, data.wrapper_status);
+      renderSettings(data.settings, data.wrapper_status, data.runtime);
       showToast('设置已保存');
     }
 
@@ -2451,6 +2790,45 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById(targetInputId).value = data.output_path;
       syncSetupOverlay();
       showToast(successMessage);
+    }
+
+    async function chooseExistingPath(apiPath, targetInputId, successMessage) {
+      const data = await api(apiPath, {
+        method: 'POST',
+        body: '{}',
+      });
+      if (!data.selected) {
+        return;
+      }
+      document.getElementById(targetInputId).value = data.input_path;
+      showToast(successMessage);
+    }
+
+    function syncConvertMode() {
+      const mode = document.getElementById('convert-input-mode').value;
+      const fileButton = document.getElementById('select-convert-file-btn');
+      const folderButton = document.getElementById('select-convert-input-folder-btn');
+      fileButton.classList.toggle('soft', mode === 'file');
+      folderButton.classList.toggle('soft', mode === 'directory');
+      fileButton.disabled = !state.runtime?.file_picker_supported || mode !== 'file';
+      folderButton.disabled = !state.runtime?.file_picker_supported || mode !== 'directory';
+      fileButton.title = mode === 'file' ? (state.runtime?.file_picker_supported ? '' : state.runtime?.input_path_message || '') : '当前模式为目录';
+      folderButton.title = mode === 'directory' ? (state.runtime?.file_picker_supported ? '' : state.runtime?.input_path_message || '') : '当前模式为文件';
+    }
+
+    async function submitConvertJob() {
+      if (!state.runtime?.conversion_supported) {
+        throw new Error(state.runtime?.conversion_message || '当前环境缺少 ffmpeg，无法转换');
+      }
+      const payload = collectConvertPayload();
+      const data = await api('/api/jobs', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      showToast(`转换任务 ${data.id} 已加入队列`);
+      document.getElementById('convert-input-path').value = '';
+      await refreshJobs();
+      activatePage('jobs');
     }
 
     async function completeSetup() {
@@ -2539,9 +2917,14 @@ docker stop wrapper-latest-10022</pre>
       });
       document.getElementById('preview-btn').addEventListener('click', () => runAction(previewLinks));
       document.getElementById('submit-job-btn').addEventListener('click', () => runAction(submitJob));
+      document.getElementById('submit-convert-btn').addEventListener('click', () => runAction(submitConvertJob));
       document.getElementById('refresh-jobs-btn').addEventListener('click', () => runAction(refreshJobs));
       document.getElementById('save-settings-btn').addEventListener('click', () => runAction(saveSettings));
       document.getElementById('select-output-btn').addEventListener('click', () => runAction(() => chooseOutputFolder('output-path', '下载目录已更新')));
+      document.getElementById('select-convert-output-btn').addEventListener('click', () => runAction(() => chooseOutputFolder('convert-output-path', '转换输出目录已更新')));
+      document.getElementById('select-convert-file-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-file', 'convert-input-path', '已选择输入文件')));
+      document.getElementById('select-convert-input-folder-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-input-folder', 'convert-input-path', '已选择输入目录')));
+      document.getElementById('convert-input-mode').addEventListener('change', syncConvertMode);
       document.getElementById('login-webview-btn').addEventListener('click', () => runAction(loginWithWebview));
       document.getElementById('browser-import-btn').addEventListener('click', () => runAction(importFromBrowser));
       document.getElementById('setup-login-webview-btn').addEventListener('click', () => runAction(setupLoginWithWebview));
@@ -2556,6 +2939,7 @@ docker stop wrapper-latest-10022</pre>
           renderLogs(state.logs);
         });
       });
+      syncConvertMode();
     }
 
     async function runAction(action) {

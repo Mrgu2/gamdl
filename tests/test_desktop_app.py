@@ -6,7 +6,7 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from gamdl.app import DesktopFileActions
-from gamdl.desktop_app import _pick_available_port, _select_folder
+from gamdl.desktop_app import _pick_available_port, _select_file, _select_folder, _select_input_folder
 
 
 class DesktopAppTests(unittest.TestCase):
@@ -41,6 +41,20 @@ class DesktopAppTests(unittest.TestCase):
             return_value=CompletedProcess(args=["osascript"], returncode=0, stdout="\n", stderr=""),
         ):
             self.assertIsNone(_select_folder())
+
+    def test_select_file_returns_selected_path(self):
+        with patch(
+            "gamdl.desktop_app.subprocess.run",
+            return_value=CompletedProcess(args=["osascript"], returncode=0, stdout="/tmp/input.m4a\n", stderr=""),
+        ):
+            self.assertEqual(_select_file(), "/tmp/input.m4a")
+
+    def test_select_input_folder_returns_selected_path(self):
+        with patch(
+            "gamdl.desktop_app.subprocess.run",
+            return_value=CompletedProcess(args=["osascript"], returncode=0, stdout="/tmp/input-folder\n", stderr=""),
+        ):
+            self.assertEqual(_select_input_folder(), "/tmp/input-folder")
 
     def test_file_actions_use_open_on_macos(self):
         file_actions = DesktopFileActions(current_platform="Darwin")

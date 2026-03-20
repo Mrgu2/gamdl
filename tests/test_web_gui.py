@@ -187,12 +187,19 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("https://docs.docker.com/desktop/setup/install/mac-install/", INDEX_HTML)
         self.assertIn("docker build -t wrapper-local .", INDEX_HTML)
         self.assertIn("wrapper-latest-10022", INDEX_HTML)
+        self.assertIn("免费 开源 纯净", INDEX_HTML)
+        self.assertIn("brand-head", INDEX_HTML)
+        self.assertIn("brand-mark", INDEX_HTML)
+        self.assertIn('linearGradient id="brand-bg"', INDEX_HTML)
         self.assertIn("AAC</option>", INDEX_HTML)
         self.assertIn("杜比全景声（需要外部 wrapper）", INDEX_HTML)
         self.assertIn('id="select-output-btn"', INDEX_HTML)
         self.assertIn('id="setup-select-output-btn"', INDEX_HTML)
         self.assertIn("background-color: #f3f4f6;", INDEX_HTML)
         self.assertIn("改编自 ${originalProjectName}", INDEX_HTML)
+        self.assertIn("修改者", INDEX_HTML)
+        self.assertIn("请确保从 GitHub 官方项目页下载", INDEX_HTML)
+        self.assertIn("https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download", INDEX_HTML)
         self.assertIn("打开下载目录", INDEX_HTML)
         self.assertIn("显示文件位置", INDEX_HTML)
         self.assertIn('id="open-file-application"', INDEX_HTML)
@@ -202,6 +209,13 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("event.target.closest('.split-pill-anchor')", INDEX_HTML)
         self.assertIn("event.key === 'Escape'", INDEX_HTML)
         self.assertIn("overflow-y: auto;", INDEX_HTML)
+        self.assertIn('data-page="convert"', INDEX_HTML)
+        self.assertIn('id="page-convert"', INDEX_HTML)
+        self.assertIn('id="submit-convert-btn"', INDEX_HTML)
+        self.assertIn('id="select-convert-file-btn"', INDEX_HTML)
+        self.assertIn('id="select-convert-input-folder-btn"', INDEX_HTML)
+        self.assertIn('id="select-convert-output-btn"', INDEX_HTML)
+        self.assertIn("ffmpeg 转换，默认保持原采样率", INDEX_HTML)
         self.assertIn("if (shouldPreserveOpenMenu && state.openWithMenuJobId)", INDEX_HTML)
         self.assertIn("refreshJobs({ preserveOpenMenu: true })", INDEX_HTML)
         self.assertIn("position: fixed;", INDEX_HTML)
@@ -308,6 +322,8 @@ class WebGuiApiTests(unittest.TestCase):
             self.paths,
             log_store=None,
             folder_picker=lambda: str(self.paths.default_output_path / "picked"),
+            file_picker=lambda: str(self.paths.default_output_path / "picked" / "input.m4a"),
+            input_folder_picker=lambda: str(self.paths.default_output_path / "picked-input"),
         )
         self.server.auth_manager = FakeAuthManager()
         self.server.file_actions = FakeFileActions()
@@ -371,6 +387,8 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertIn("runtime", data)
         self.assertEqual(data["runtime"]["platform"], platform.system())
         self.assertTrue(data["runtime"]["folder_picker_supported"])
+        self.assertTrue(data["runtime"]["file_picker_supported"])
+        self.assertTrue(data["runtime"]["conversion_supported"])
         self.assertEqual(
             data["runtime"]["file_actions_supported"],
             self.server.file_actions.supported,
@@ -434,6 +452,25 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(Path(data["output_path"]).name, "picked")
         self.assertTrue(Path(data["output_path"]).exists())
 
+    def test_select_file_returns_existing_input_path(self):
+        selected = Path(self.server.file_picker())
+        selected.parent.mkdir(parents=True, exist_ok=True)
+        selected.write_text("audio", encoding="utf-8")
+
+        data = self._post_json("/api/desktop/select-file", {})
+
+        self.assertTrue(data["selected"])
+        self.assertEqual(data["input_path"], str(selected.resolve()))
+
+    def test_select_input_folder_returns_existing_directory(self):
+        selected = Path(self.server.input_folder_picker())
+        selected.mkdir(parents=True, exist_ok=True)
+
+        data = self._post_json("/api/desktop/select-input-folder", {})
+
+        self.assertTrue(data["selected"])
+        self.assertEqual(data["input_path"], str(selected.resolve()))
+
     def test_about_reports_distribution_audio_policy(self):
         data = self._get_json("/api/about")
         self.assertEqual(data["distribution_audio_default"], "aac-legacy")
@@ -451,6 +488,12 @@ class WebGuiApiTests(unittest.TestCase):
             data["original_project_url"],
             "https://github.com/glomatico/gamdl",
         )
+        self.assertEqual(data["modified_by"], "@Mrgu2")
+        self.assertEqual(
+            data["modified_project_url"],
+            "https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download",
+        )
+        self.assertIn("请确保从 GitHub @Mrgu2 下载该软件", data["download_safety_note"])
         self.assertIn("wrapper_status", data)
         self.assertIn("runtime", data)
         self.assertEqual(data["runtime"]["platform"], platform.system())
@@ -498,6 +541,51 @@ class WebGuiApiTests(unittest.TestCase):
             self.assertEqual(job["result"]["downloaded_items"], 1)
             self.assertEqual(job["result"]["latest_media_path"], latest_media_path)
             self.assertEqual(job["result"]["latest_media_dir"], str(Path(latest_media_path).parent))
+
+    def test_create_convert_job_uses_internal_conversion_service(self):
+        input_file = self.paths.app_support_dir / "input" / "Track.m4a"
+        input_file.parent.mkdir(parents=True, exist_ok=True)
+        input_file.write_text("audio", encoding="utf-8")
+        output_path = self.paths.app_support_dir / "converted"
+
+        with patch(
+            "gamdl.web_gui.ConversionService.run",
+            return_value=type(
+                "FakeConversionResult",
+                (),
+                {
+                    "errors": 0,
+                    "to_dict": lambda self: {
+                        "total_files": 1,
+                        "converted_files": 1,
+                        "skipped_files": 0,
+                        "errors": 0,
+                        "latest_media_path": str(output_path / "Track.flac"),
+                        "latest_media_dir": str(output_path),
+                    },
+                },
+            )(),
+        ):
+            data = self._post_json(
+                "/api/jobs",
+                {
+                    "kind": "convert",
+                    "input_mode": "file",
+                    "input_path": str(input_file),
+                    "output_path": str(output_path),
+                    "target_format": "flac",
+                    "overwrite": False,
+                },
+            )
+            job_id = data["id"]
+            for _ in range(30):
+                job = self._get_json(f"/api/jobs/{job_id}")
+                if job["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(job["kind"], "convert")
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(job["result"]["converted_files"], 1)
 
     def test_open_output_action_uses_job_output_path(self):
         output_path = self.paths.default_output_path / "album"

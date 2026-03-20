@@ -1,8 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 
 datas = [('README.md', '.')]
 binaries = []
 hiddenimports = []
+
+bundled_ffmpeg = Path('assets/windows/ffmpeg.exe')
+if bundled_ffmpeg.exists():
+    binaries.append((str(bundled_ffmpeg), 'bin'))
 
 
 a = Analysis(

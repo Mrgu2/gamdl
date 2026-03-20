@@ -28,6 +28,19 @@ def _pick_available_port(host: str, preferred_port: int) -> int:
         return int(probe.getsockname()[1])
 
 
+def _run_osascript_picker(script: str, failure_message: str) -> str | None:
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(failure_message)
+    selected = result.stdout.strip()
+    return selected or None
+
+
 def _select_folder() -> str | None:
     script = """
 try
@@ -37,16 +50,31 @@ on error number -128
     return ""
 end try
 """
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("无法打开文件夹选择器。")
-    selected = result.stdout.strip()
-    return selected or None
+    return _run_osascript_picker(script, "无法打开文件夹选择器。")
+
+
+def _select_input_folder() -> str | None:
+    script = """
+try
+    set chosenFolder to POSIX path of (choose folder with prompt "选择输入目录")
+    return chosenFolder
+on error number -128
+    return ""
+end try
+"""
+    return _run_osascript_picker(script, "无法打开输入目录选择器。")
+
+
+def _select_file() -> str | None:
+    script = """
+try
+    set chosenFile to POSIX path of (choose file with prompt "选择输入文件")
+    return chosenFile
+on error number -128
+    return ""
+end try
+"""
+    return _run_osascript_picker(script, "无法打开文件选择器。")
 
 
 def main() -> None:
@@ -77,6 +105,8 @@ def main() -> None:
         paths=paths,
         log_store=log_store,
         folder_picker=_select_folder,
+        file_picker=_select_file,
+        input_folder_picker=_select_input_folder,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

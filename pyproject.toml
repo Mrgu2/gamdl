@@ -1,7 +1,7 @@
 [project]
 name = "gamdl"
-version = "2.9.3"
-description = "A command-line app for downloading Apple Music songs, music videos and post videos."
+version = "1.0.0"
+description = "A desktop-focused Apple Music downloader fork with macOS and Windows builds."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -30,7 +30,7 @@ desktop-build = [
 ]
 
 [project.urls]
-Repository = "https://github.com/glomatico/gamdl"
+Repository = "https://github.com/Mrgu2/gamdl"
 
 [project.scripts]
 gamdl = "gamdl.cli.cli:main"

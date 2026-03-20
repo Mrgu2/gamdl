@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('README.md', '.')]
@@ -6,6 +7,10 @@ binaries = []
 hiddenimports = ['webview.platforms.cocoa', 'AppKit', 'WebKit']
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+bundled_ffmpeg = Path('assets/macos/ffmpeg')
+if bundled_ffmpeg.exists():
+    binaries.append((str(bundled_ffmpeg), 'bin'))
 
 
 a = Analysis(
