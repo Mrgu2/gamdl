@@ -7,16 +7,26 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "async-lru>=2.0.5",
+    "browser-cookie3>=0.20.1",
     "click>=8.3.0",
     "colorama>=0.4.6",
     "dataclass-click>=1.0.4",
     "httpx>=0.28.1",
     "inquirerpy>=0.3.4",
+    "keyring>=25.6.0",
     "m3u8>=6.0.0",
     "mutagen>=1.47.0",
     "pillow>=12.0.0",
+    "pyobjc-framework-Cocoa>=11.0; sys_platform == 'darwin'",
+    "pyobjc-framework-WebKit>=11.0; sys_platform == 'darwin'",
+    "pywebview>=5.4",
     "pywidevine>=1.8.0",
     "yt-dlp>=2025.10.22",
+]
+
+[project.optional-dependencies]
+desktop-build = [
+    "pyinstaller>=6.14.0",
 ]
 
 [project.urls]
@@ -24,3 +34,5 @@ Repository = "https://github.com/glomatico/gamdl"
 
 [project.scripts]
 gamdl = "gamdl.cli.cli:main"
+gamdl-desktop = "gamdl.desktop_app:main"
+gamdl-windows = "gamdl.windows_app:main"

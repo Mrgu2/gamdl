@@ -96,16 +96,38 @@ class AppleMusicInterface:
             ),
         )
 
+    def _resolve_cover_size(
+        self,
+        metadata: dict,
+        cover_size: int | None,
+    ) -> int | None:
+        artwork = metadata["attributes"].get("artwork", {})
+        max_width = artwork.get("width")
+        max_height = artwork.get("height")
+        max_size = (
+            min(max_width, max_height)
+            if isinstance(max_width, int) and isinstance(max_height, int)
+            else None
+        )
+
+        if max_size is None:
+            return cover_size
+        if cover_size is None:
+            return max_size
+        return min(cover_size, max_size)
+
     def get_cover_url(
         self,
+        metadata: dict,
         cover_url_template: str,
-        cover_size: int,
+        cover_size: int | None,
         cover_format: CoverFormat,
     ) -> str:
+        resolved_cover_size = self._resolve_cover_size(metadata, cover_size)
         cover_url = re.sub(
             r"/\{w\}x\{h\}([a-z]{2})\.jpg",
             (
-                f"/{cover_size}x{cover_size}bb.{cover_format.value}"
+                f"/{resolved_cover_size}x{resolved_cover_size}bb.{cover_format.value}"
                 if cover_format != CoverFormat.RAW
                 else ""
             ),

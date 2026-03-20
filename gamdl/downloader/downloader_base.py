@@ -19,11 +19,11 @@ from .hardcoded_wvd import HARDCODED_WVD
 class AppleMusicBaseDownloader:
     def __init__(
         self,
-        output_path: str = "./Apple Music",
+        output_path: str = "/Users/wenjiegu/Downloads",
         temp_path: str = ".",
         wvd_path: str = None,
         overwrite: bool = False,
-        save_cover: bool = False,
+        save_cover: bool = True,
         save_playlist: bool = False,
         nm3u8dlre_path: str = "N_m3u8DL-RE",
         mp4decrypt_path: str = "mp4decrypt",
@@ -42,7 +42,7 @@ class AppleMusicBaseDownloader:
         playlist_file_template: str = "Playlists/{playlist_artist}/{playlist_title}",
         date_tag_template: str = "%Y-%m-%dT%H:%M:%SZ",
         exclude_tags: list[str] = None,
-        cover_size: int = 1200,
+        cover_size: int | None = None,
         truncate: int = None,
         silent: bool = False,
     ):

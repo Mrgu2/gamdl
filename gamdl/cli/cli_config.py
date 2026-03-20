@@ -203,10 +203,9 @@ class CliConfig:
     save_cover: Annotated[
         bool,
         option(
-            "--save-cover",
-            "-s",
+            "--save-cover/--no-save-cover",
             help="Save cover as separate file",
-            is_flag=True,
+            default=base_downloader_sig.parameters["save_cover"].default,
         ),
     ]
     save_playlist: Annotated[
