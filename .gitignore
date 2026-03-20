@@ -7,7 +7,11 @@ __pycache__
 !pyproject.toml
 !README.md
 !uv.lock
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 !Apple Music Downloader.spec
+!Apple Music Downloader Windows.spec
 !Gamdl.spec
 !assets/
 !assets/macos/
@@ -19,3 +23,5 @@ __pycache__
 !scripts/
 !scripts/build-macos-app.sh
 !scripts/generate-macos-icon.sh
+!tests/
+!tests/test_windows_app.py
