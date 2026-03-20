@@ -69,6 +69,7 @@ class AppleMusicUploadedVideoDownloader(AppleMusicBaseDownloader):
             self.cover_format,
         )
         download_item.cover_url = self.interface.get_cover_url(
+            uploaded_video_metadata,
             download_item.cover_url_template,
             self.cover_size,
             self.cover_format,
