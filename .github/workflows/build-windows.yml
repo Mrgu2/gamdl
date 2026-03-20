@@ -27,6 +27,15 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra desktop-build
 
+      - name: Install bundled ffmpeg source
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          New-Item -ItemType Directory -Force -Path assets/windows | Out-Null
+          $ffmpeg = (Get-Command ffmpeg).Source
+          Copy-Item $ffmpeg assets/windows/ffmpeg.exe -Force
+          ffmpeg -version | Select-Object -First 1
+
       - name: Run desktop tests
         run: uv run python -m unittest discover -s tests
 

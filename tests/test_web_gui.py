@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus
+from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus, resolve_executable
 from gamdl.web_gui import (
     INDEX_HTML,
     GUI_SETTINGS_DEFAULTS,
@@ -388,7 +388,10 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(data["runtime"]["platform"], platform.system())
         self.assertTrue(data["runtime"]["folder_picker_supported"])
         self.assertTrue(data["runtime"]["file_picker_supported"])
-        self.assertTrue(data["runtime"]["conversion_supported"])
+        self.assertEqual(
+            data["runtime"]["conversion_supported"],
+            resolve_executable("ffmpeg").available,
+        )
         self.assertEqual(
             data["runtime"]["file_actions_supported"],
             self.server.file_actions.supported,

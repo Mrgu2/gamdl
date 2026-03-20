@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,10 @@ from mutagen.mp4 import MP4, MP4Cover
 from gamdl.app import ConversionJobSpec, ConversionService
 
 
+FFMPEG_COMMAND = shutil.which("ffmpeg")
+
+
+@unittest.skipUnless(FFMPEG_COMMAND, "ffmpeg is required for conversion integration tests")
 class ConversionServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = ConversionService()
@@ -20,7 +25,7 @@ class ConversionServiceTests(unittest.TestCase):
         cover = root / "cover.jpg"
         subprocess.run(
             [
-                "ffmpeg",
+                FFMPEG_COMMAND,
                 "-f",
                 "lavfi",
                 "-i",
@@ -39,7 +44,7 @@ class ConversionServiceTests(unittest.TestCase):
         )
         subprocess.run(
             [
-                "ffmpeg",
+                FFMPEG_COMMAND,
                 "-f",
                 "lavfi",
                 "-i",
@@ -65,7 +70,7 @@ class ConversionServiceTests(unittest.TestCase):
         source = root / "sample.wav"
         subprocess.run(
             [
-                "ffmpeg",
+                FFMPEG_COMMAND,
                 "-f",
                 "lavfi",
                 "-i",
