@@ -1,8 +1,21 @@
 /*
 __pycache__
+.DS_Store
 !gamdl
 !.gitignore
 !.python-version
 !pyproject.toml
 !README.md
 !uv.lock
+!Apple Music Downloader.spec
+!Gamdl.spec
+!assets/
+!assets/macos/
+!assets/macos/app-icon.svg
+!assets/macos/app-icon-1024.png
+!assets/macos/app-icon.icns
+!assets/macos/AppIcon.iconset/
+!assets/macos/AppIcon.iconset/*.png
+!scripts/
+!scripts/build-macos-app.sh
+!scripts/generate-macos-icon.sh
