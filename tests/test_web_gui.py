@@ -491,7 +491,7 @@ class WebGuiApiTests(unittest.TestCase):
             job_id = data["id"]
             for _ in range(30):
                 job = self._get_json(f"/api/jobs/{job_id}")
-                if job["status"] != "queued":
+                if job["status"] in {"completed", "failed", "cancelled"}:
                     break
                 time.sleep(0.05)
             self.assertEqual(job["status"], "completed")
