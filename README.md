@@ -15,8 +15,6 @@ Adapted from [Gamdl (Glomatico's Apple Music Downloader)](https://github.com/glo
 
 This repository is adapted from Gamdl. The current primary deliverable is a macOS desktop app called `Apple Music Downloader`, while the original CLI capabilities and most command-line reference docs are still kept in the repo.
 
-**Join our Discord Server:** <https://discord.gg/aBjMEZ9tnq>
-
 ## 项目说明 / Overview
 
 ### 桌面版当前定位 / Current Desktop Scope
