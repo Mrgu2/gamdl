@@ -177,11 +177,9 @@ class WebGuiApiTests(unittest.TestCase):
 
     def test_get_settings_returns_defaults(self):
         data = self._get_json("/api/settings")
-        self.assertTrue(
-            data["settings"]["output_path"].endswith(
-                "Downloads/Apple Music Downloader"
-            )
-        )
+        output_path = Path(data["settings"]["output_path"])
+        self.assertEqual(output_path.name, "Apple Music Downloader")
+        self.assertEqual(output_path.parent.name, "Downloads")
         self.assertTrue(data["settings"]["save_cover"])
         self.assertFalse(data["settings"]["setup_completed"])
         self.assertEqual(data["settings"]["song_codec"], "aac-legacy")
@@ -194,10 +192,11 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertTrue(data["runtime"]["folder_picker_supported"])
 
     def test_post_settings_persists_whitelisted_values(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
         self._post_json(
             "/api/settings",
             {
-                "output_path": "/tmp/remembered",
+                "output_path": str(remembered_path),
                 "log_level": "DEBUG",
                 "browser_import_enabled": False,
                 "setup_completed": True,
@@ -208,7 +207,7 @@ class WebGuiApiTests(unittest.TestCase):
             },
         )
         data = self._get_json("/api/settings")
-        self.assertEqual(data["settings"]["output_path"], "/tmp/remembered")
+        self.assertEqual(data["settings"]["output_path"], str(remembered_path))
         self.assertEqual(data["settings"]["log_level"], "DEBUG")
         self.assertFalse(data["settings"]["browser_import_enabled"])
         self.assertTrue(data["settings"]["setup_completed"])
@@ -226,7 +225,7 @@ class WebGuiApiTests(unittest.TestCase):
     def test_select_folder_returns_validated_path(self):
         data = self._post_json("/api/desktop/select-folder", {})
         self.assertTrue(data["selected"])
-        self.assertTrue(data["output_path"].endswith("/picked"))
+        self.assertEqual(Path(data["output_path"]).name, "picked")
         self.assertTrue(Path(data["output_path"]).exists())
 
     def test_about_reports_distribution_audio_policy(self):
@@ -263,12 +262,13 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(bundle_path.suffix, ".zip")
 
     def test_create_job_uses_internal_download_service(self):
+        downloads_path = self.paths.app_support_dir / "downloads"
         with patch("gamdl.web_gui.DownloadService.run_sync", return_value=FakeDownloadResult()):
             data = self._post_json(
                 "/api/jobs",
                 {
                     "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
-                    "output_path": "/tmp/downloads",
+                    "output_path": str(downloads_path),
                     "overwrite": False,
                     "save_cover": True,
                     "log_level": "INFO",
