@@ -20,7 +20,7 @@ DEFAULT_HTML = ROOT / "marketing/poster/index.html"
 DEFAULT_OUTPUT = ROOT / "marketing/poster/export/poster-final-hidpi.png"
 DEFAULT_VIEWPORT = (1200, 1600)
 DEFAULT_POSTER = (1080, 1350)
-DEFAULT_RADIUS = 40
+DEFAULT_RADIUS = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +76,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_RADIUS,
         help="Poster corner radius in CSS pixels.",
+    )
+    parser.add_argument(
+        "--crop-top-adjust",
+        type=int,
+        default=0,
+        help="Additional crop offset on Y axis in CSS pixels. Negative moves crop upward.",
+    )
+    parser.add_argument(
+        "--crop-left-adjust",
+        type=int,
+        default=0,
+        help="Additional crop offset on X axis in CSS pixels.",
     )
     return parser.parse_args()
 
@@ -146,10 +158,27 @@ def capture_screenshot(
 
 def apply_rounded_alpha(image: Image.Image, radius: int) -> Image.Image:
     result = image.convert("RGBA")
+    if radius <= 0:
+        return result
     mask = Image.new("L", result.size, 0)
     draw = ImageDraw.Draw(mask)
     draw.rounded_rectangle((0, 0, result.width - 1, result.height - 1), radius=radius, fill=255)
     result.putalpha(mask)
+    return result
+
+
+def normalize_edge_pixels(image: Image.Image) -> Image.Image:
+    result = image.convert("RGBA")
+    if result.width < 2 or result.height < 2:
+        return result
+
+    # Remove 1px seams introduced by screenshot crop boundaries.
+    for x in range(result.width):
+        result.putpixel((x, 0), result.getpixel((x, 1)))
+        result.putpixel((x, result.height - 1), result.getpixel((x, result.height - 2)))
+    for y in range(result.height):
+        result.putpixel((0, y), result.getpixel((1, y)))
+        result.putpixel((result.width - 1, y), result.getpixel((result.width - 2, y)))
     return result
 
 
@@ -169,8 +198,12 @@ def main() -> int:
 
     chrome_path = find_chrome(args.chrome_path)
     relative_html = html_path.relative_to(ROOT).as_posix()
-    crop_left = ((args.viewport_width - args.poster_width) // 2) * render_scale
-    crop_top = ((args.viewport_height - args.poster_height) // 2) * render_scale
+    crop_left = (
+        ((args.viewport_width - args.poster_width) // 2) + args.crop_left_adjust
+    ) * render_scale
+    crop_top = (
+        ((args.viewport_height - args.poster_height) // 2) + args.crop_top_adjust
+    ) * render_scale
     crop_right = crop_left + args.poster_width * render_scale
     crop_bottom = crop_top + args.poster_height * render_scale
 
@@ -195,6 +228,7 @@ def main() -> int:
         if cropped.size != target_size:
             cropped = cropped.resize(target_size, Image.Resampling.LANCZOS)
 
+        cropped = normalize_edge_pixels(cropped)
         cropped.save(output_path)
         print(output_path)
         print(f"size={cropped.size[0]}x{cropped.size[1]}")

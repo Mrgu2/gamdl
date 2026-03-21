@@ -2540,6 +2540,12 @@ docker stop wrapper-latest-10022</pre>
     </main>
   </div>
 
+  <div class="finder-menu" id="open-with-menu" hidden>
+    <button class="finder-menu-item" type="button" disabled>
+      <span>正在读取打开方式…</span>
+    </button>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
@@ -2975,11 +2981,6 @@ docker stop wrapper-latest-10022</pre>
               <div class="menu-anchor split-pill-anchor ${latestMediaPath ? '' : 'disabled'}" data-job-id="${job.id}">
                 <button class="split-pill-main" type="button" onclick="openJobFile('${job.id}')" ${latestMediaPath ? '' : 'disabled title="当前任务没有可打开的下载文件"'}>打开文件</button>
                 <button class="split-pill-toggle" type="button" aria-label="打开方式" aria-haspopup="menu" aria-expanded="false" onclick="toggleOpenWithMenu('${job.id}', event)" ${latestMediaPath ? '' : 'disabled title="当前任务没有可打开的下载文件"'}><span class="split-pill-chevron" aria-hidden="true">›</span></button>
-                <div class="finder-menu" id="open-with-menu-${job.id}" hidden>
-                  <button class="finder-menu-item" type="button" disabled>
-                    <span>正在读取打开方式…</span>
-                  </button>
-                </div>
               </div>
               <button class="btn soft" onclick="revealJobFile('${job.id}')" ${latestMediaPath ? '' : 'disabled title="当前任务没有可显示位置的下载文件"'}>显示文件位置</button>
             </div>
@@ -3259,11 +3260,16 @@ docker stop wrapper-latest-10022</pre>
     }
     window.cancelJob = cancelJob;
 
+    function getOpenWithMenu() {
+      return document.getElementById('open-with-menu');
+    }
+
     function closeOpenWithMenus() {
-      document.querySelectorAll('.finder-menu').forEach((menu) => {
+      const menu = getOpenWithMenu();
+      if (menu) {
         menu.classList.remove('measuring');
         menu.hidden = true;
-      });
+      }
       document.querySelectorAll('.split-pill-anchor').forEach((anchor) => {
         anchor.classList.remove('open');
         anchor.classList.remove('loading');
@@ -3275,7 +3281,7 @@ docker stop wrapper-latest-10022</pre>
     window.closeOpenWithMenus = closeOpenWithMenus;
 
     function renderOpenWithMenu(jobId, data) {
-      const menu = document.getElementById(`open-with-menu-${jobId}`);
+      const menu = getOpenWithMenu();
       if (!menu) return;
       const items = data.options || [];
       menu.innerHTML = items.map((item) => {
@@ -3296,7 +3302,7 @@ docker stop wrapper-latest-10022</pre>
     }
 
     function revealMeasuredOpenWithMenu(jobId) {
-      const menu = document.getElementById(`open-with-menu-${jobId}`);
+      const menu = getOpenWithMenu();
       if (!menu) return;
       menu.hidden = false;
       menu.classList.add('measuring');
@@ -3305,7 +3311,7 @@ docker stop wrapper-latest-10022</pre>
     }
 
     function positionOpenWithMenu(jobId) {
-      const menu = document.getElementById(`open-with-menu-${jobId}`);
+      const menu = getOpenWithMenu();
       const toggle = document.querySelector(`.split-pill-anchor[data-job-id="${jobId}"] .split-pill-toggle`);
       if (!menu || !toggle) return;
 
@@ -3348,7 +3354,7 @@ docker stop wrapper-latest-10022</pre>
     async function toggleOpenWithMenu(jobId, event) {
       try {
         event.stopPropagation();
-        const menu = document.getElementById(`open-with-menu-${jobId}`);
+        const menu = getOpenWithMenu();
         const anchor = event.currentTarget.closest('.split-pill-anchor');
         const toggle = event.currentTarget;
         if (!menu) return;

@@ -1,6 +1,6 @@
-# Apple Music Downloader 1.0.1
+# Apple Music Downloader 1.0.2
 
-[![Release](https://img.shields.io/badge/release-1.0.1-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.0.2-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 [![Windows Build](https://img.shields.io/github/actions/workflow/status/Mrgu2/gu_music_downloader/build-windows.yml?branch=codex%2Falac-download&label=windows%20build)](https://github.com/Mrgu2/gu_music_downloader/actions/workflows/build-windows.yml)
 
@@ -14,7 +14,7 @@
 
 ## 项目定位
 
-`Apple Music Downloader 1.0.1` 的目标很明确：
+`Apple Music Downloader 1.0.2` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -27,9 +27,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.1 发布内容
+## 1.0.2 发布内容
 
-正式版 `1.0.1` 交付两套桌面客户端：
+正式版 `1.0.2` 交付两套桌面客户端：
 
 - `Apple.Music.Downloader.dmg`
   - 面向 macOS
