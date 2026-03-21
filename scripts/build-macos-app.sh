@@ -82,7 +82,7 @@ Apple Music Downloader
 5. 确认弹窗后，再次打开应用。
 
 如果这个构建不是来自你信任的人，请不要打开。
-项目地址：https://github.com/Mrgu2/gamdl
+项目地址：https://github.com/Mrgu2/gu_music_downloader
 
 Apple Music Downloader
 Modified from the Gamdl project for macOS desktop use.
@@ -98,7 +98,7 @@ How to open it
 5. Confirm the dialog, then open the app again.
 
 If you received this build from someone you do not trust, do not open it.
-Project page: https://github.com/Mrgu2/gamdl
+Project page: https://github.com/Mrgu2/gu_music_downloader
 EOF
 
 ditto "$APP_PATH" "$DMG_STAGE_DIR/$APP_NAME.app"

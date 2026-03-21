@@ -1,8 +1,8 @@
-# Apple Music Downloader 1.0.0
+# Apple Music Downloader 1.0.1
 
-[![Release](https://img.shields.io/badge/release-1.0.0-0a84ff)](https://github.com/Mrgu2/gamdl/releases)
-[![License](https://img.shields.io/github/license/Mrgu2/gamdl)](https://github.com/Mrgu2/gamdl/blob/codex/fix-wrapper-alac-download/LICENSE)
-[![Windows Build](https://img.shields.io/github/actions/workflow/status/Mrgu2/gamdl/build-windows.yml?branch=codex%2Ffix-wrapper-alac-download&label=windows%20build)](https://github.com/Mrgu2/gamdl/actions/workflows/build-windows.yml)
+[![Release](https://img.shields.io/badge/release-1.0.1-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
+[![Windows Build](https://img.shields.io/github/actions/workflow/status/Mrgu2/gu_music_downloader/build-windows.yml?branch=codex%2Falac-download&label=windows%20build)](https://github.com/Mrgu2/gu_music_downloader/actions/workflows/build-windows.yml)
 
 <p align="center">
   <img src="assets/macos/app-icon-1024.png" alt="Apple Music Downloader app icon" width="180" />
@@ -10,11 +10,11 @@
 
 这是一个以桌面版为中心维护的 Apple Music 下载工具 fork，基于上游 [Gamdl](https://github.com/glomatico/gamdl) 改编，由 [@Mrgu2](https://github.com/Mrgu2) 持续维护。
 
-软件纯免费开源，无病毒，无额外广告。请确保你是从 GitHub [@Mrgu2](https://github.com/Mrgu2/gamdl) 下载该软件，以保证来源可核验、没有后门风险。
+软件纯免费开源，无病毒，无额外广告。请确保你是从 GitHub [@Mrgu2](https://github.com/Mrgu2/gu_music_downloader) 下载该软件，以保证来源可核验、没有后门风险。
 
 ## 项目定位
 
-`Apple Music Downloader 1.0.0` 的目标很明确：
+`Apple Music Downloader 1.0.1` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -23,13 +23,13 @@
 
 当前维护分支：
 
-- Fork 仓库：[Mrgu2/gamdl](https://github.com/Mrgu2/gamdl)
-- 当前修改分支：[codex/fix-wrapper-alac-download](https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download)
+- Fork 仓库：[Mrgu2/gu_music_downloader](https://github.com/Mrgu2/gu_music_downloader)
+- 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.0 发布内容
+## 1.0.1 发布内容
 
-正式版 `1.0.0` 交付两套桌面客户端：
+正式版 `1.0.1` 交付两套桌面客户端：
 
 - `Apple.Music.Downloader.dmg`
   - 面向 macOS
@@ -84,7 +84,7 @@
 
 ### macOS
 
-1. 前往 [Releases](https://github.com/Mrgu2/gamdl/releases)
+1. 前往 [Releases](https://github.com/Mrgu2/gu_music_downloader/releases)
 2. 下载 `Apple.Music.Downloader.dmg`
 3. 将 `Apple Music Downloader.app` 拖到 `Applications`
 4. 首次打开如果被 Gatekeeper 阻止，在 `系统设置 > 隐私与安全性` 里点 `仍要打开`
@@ -97,7 +97,7 @@ macOS 包说明：
 
 ### Windows
 
-1. 前往 [Releases](https://github.com/Mrgu2/gamdl/releases)
+1. 前往 [Releases](https://github.com/Mrgu2/gu_music_downloader/releases)
 2. 下载 `Apple.Music.Downloader.Windows.zip`
 3. 解压后运行 `Apple Music Downloader Windows.exe`
 
@@ -153,7 +153,7 @@ dist/Apple Music Downloader.dmg
 
 现有 workflow：
 
-- [Build Windows Desktop App](https://github.com/Mrgu2/gamdl/actions/workflows/build-windows.yml)
+- [Build Windows Desktop App](https://github.com/Mrgu2/gu_music_downloader/actions/workflows/build-windows.yml)
 
 它会：
 
@@ -193,7 +193,7 @@ uv run python -m gamdl.desktop_app
 如果你是高级用户，可以直接查看：
 
 - 上游 CLI 项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
-- 当前源码仓库：[Mrgu2/gamdl](https://github.com/Mrgu2/gamdl)
+- 当前源码仓库：[Mrgu2/gu_music_downloader](https://github.com/Mrgu2/gu_music_downloader)
 
 命令行入口仍然可用：
 
