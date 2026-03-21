@@ -42,21 +42,21 @@ def detect_desktop_runtime(
         )
     else:
         native_login_message = (
-            f"{current_platform} 版当前不提供内置登录。请先在本机浏览器登录 Apple Music，再使用浏览器导入登录态。"
+            f"{current_platform} 版不支持内置登录，请使用浏览器导入。"
         )
 
     if folder_picker_supported:
         output_path_message = "使用“选择文件夹”即可写入下载目录。"
     else:
         output_path_message = (
-            f"{current_platform} 版当前不提供原生文件夹选择器。请直接输入完整下载目录。"
+            f"{current_platform} 版不支持文件夹选择器，请输入下载目录。"
         )
 
     if file_picker_supported:
         input_path_message = "可以直接使用“选择文件”或“选择文件夹”填写转换输入路径。"
     else:
         input_path_message = (
-            f"{current_platform} 版当前不提供原生文件选择器。请直接输入完整输入路径。"
+            f"{current_platform} 版不支持文件选择器，请输入完整路径。"
         )
 
     if file_actions_supported:

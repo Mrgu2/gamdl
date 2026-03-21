@@ -23,9 +23,11 @@ STRING_KEYS = {
     "last_login_method",
     "open_file_application",
     "song_codec",
+    "theme",
     "wrapper_decrypt_ip",
 }
 CLEARABLE_STRING_KEYS = {"open_file_application"}
+ALLOWED_THEMES = {"warm", "cool"}
 
 
 @dataclass
@@ -39,6 +41,7 @@ class AppSettings:
     browser_import_enabled: bool = True
     setup_completed: bool = False
     song_codec: str = "aac-legacy"
+    theme: str = "warm"
     use_wrapper: bool = False
     wrapper_decrypt_ip: str = "127.0.0.1:10022"
 
@@ -91,6 +94,8 @@ class AppSettingsStore:
             sanitized.pop("log_level")
         if "song_codec" in sanitized and sanitized["song_codec"] not in ALLOWED_SONG_CODECS:
             sanitized.pop("song_codec")
+        if "theme" in sanitized and sanitized["theme"] not in ALLOWED_THEMES:
+            sanitized.pop("theme")
         return sanitized
 
     def load(self) -> AppSettings:

@@ -198,8 +198,8 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("background-color: #f3f4f6;", INDEX_HTML)
         self.assertIn("改编自 ${originalProjectName}", INDEX_HTML)
         self.assertIn("修改者", INDEX_HTML)
-        self.assertIn("请确保从 GitHub 官方项目页下载", INDEX_HTML)
-        self.assertIn("https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download", INDEX_HTML)
+        self.assertIn("请确保从 GitHub @Mrgu2 下载该软件", INDEX_HTML)
+        self.assertIn("https://github.com/Mrgu2/gu_music_downloader", INDEX_HTML)
         self.assertIn("打开下载目录", INDEX_HTML)
         self.assertIn("显示文件位置", INDEX_HTML)
         self.assertIn('id="open-file-application"', INDEX_HTML)
@@ -215,7 +215,8 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn('id="select-convert-file-btn"', INDEX_HTML)
         self.assertIn('id="select-convert-input-folder-btn"', INDEX_HTML)
         self.assertIn('id="select-convert-output-btn"', INDEX_HTML)
-        self.assertIn("ffmpeg 转换，默认保持原采样率", INDEX_HTML)
+        self.assertIn('id="theme-select"', INDEX_HTML)
+        self.assertIn("使用 ffmpeg 转换本地文件。", INDEX_HTML)
         self.assertIn("if (shouldPreserveOpenMenu && state.openWithMenuJobId)", INDEX_HTML)
         self.assertIn("refreshJobs({ preserveOpenMenu: true })", INDEX_HTML)
         self.assertIn("position: fixed;", INDEX_HTML)
@@ -236,12 +237,27 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("function revealMeasuredOpenWithMenu(jobId)", INDEX_HTML)
         self.assertIn("menu.classList.add('measuring');", INDEX_HTML)
         self.assertIn("menu.classList.remove('measuring');", INDEX_HTML)
+        self.assertIn('data-theme="warm"', INDEX_HTML)
+        self.assertIn('body[data-theme="cool"]', INDEX_HTML)
+        self.assertIn("function applyTheme(theme)", INDEX_HTML)
 
     def test_shell_panels_do_not_blur_fixed_menu_ancestors(self):
         match = re.search(r"\.sidebar, \.main-panel \{(?P<block>.*?)\n    \}", INDEX_HTML, re.S)
         self.assertIsNotNone(match)
         self.assertNotIn("backdrop-filter", match.group("block"))
         self.assertIn("position: fixed;", INDEX_HTML)
+
+    def test_cool_theme_nav_hover_preserves_active_state(self):
+        self.assertIn(".nav-btn:hover:not(.active)", INDEX_HTML)
+        match = re.search(
+            r'body\[data-theme="cool"\] \.nav-btn:hover:not\(\.active\) \{(?P<block>.*?)\n    \}',
+            INDEX_HTML,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        block = match.group("block")
+        self.assertIn("background: rgba(10, 132, 255, .06);", block)
+        self.assertIn("border-color: rgba(148, 163, 184, .22);", block)
 
     def test_split_pill_anchor_avoids_geometry_changing_motion(self):
         anchor_match = re.search(r"\.split-pill-anchor \{(?P<block>.*?)\n    \}", INDEX_HTML, re.S)
@@ -307,6 +323,7 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("browser_import_enabled", GUI_SETTINGS_DEFAULTS)
         self.assertIn("setup_completed", GUI_SETTINGS_DEFAULTS)
         self.assertIn("song_codec", GUI_SETTINGS_DEFAULTS)
+        self.assertIn("theme", GUI_SETTINGS_DEFAULTS)
         self.assertIn("use_wrapper", GUI_SETTINGS_DEFAULTS)
         self.assertIn("wrapper_decrypt_ip", GUI_SETTINGS_DEFAULTS)
         self.assertIn("open_file_application", GUI_SETTINGS_DEFAULTS)
@@ -380,6 +397,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertTrue(data["settings"]["save_cover"])
         self.assertFalse(data["settings"]["setup_completed"])
         self.assertEqual(data["settings"]["song_codec"], "aac-legacy")
+        self.assertEqual(data["settings"]["theme"], "warm")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
         self.assertIn("wrapper_status", data)
@@ -407,6 +425,7 @@ class WebGuiApiTests(unittest.TestCase):
                 "browser_import_enabled": False,
                 "setup_completed": True,
                 "song_codec": "aac-legacy",
+                "theme": "cool",
                 "use_wrapper": False,
                 "wrapper_decrypt_ip": "127.0.0.1:10022",
                 "open_file_application": "VLC",
@@ -419,6 +438,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertFalse(data["settings"]["browser_import_enabled"])
         self.assertTrue(data["settings"]["setup_completed"])
         self.assertEqual(data["settings"]["song_codec"], "aac-legacy")
+        self.assertEqual(data["settings"]["theme"], "cool")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
         self.assertEqual(data["settings"]["open_file_application"], "VLC")
@@ -494,7 +514,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(data["modified_by"], "@Mrgu2")
         self.assertEqual(
             data["modified_project_url"],
-            "https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download",
+            "https://github.com/Mrgu2/gu_music_downloader",
         )
         self.assertIn("请确保从 GitHub @Mrgu2 下载该软件", data["download_safety_note"])
         self.assertIn("wrapper_status", data)

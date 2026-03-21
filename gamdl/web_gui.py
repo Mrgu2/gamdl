@@ -388,7 +388,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                     "original_project_name": "Gamdl (Glomatico's Apple Music Downloader)",
                     "original_project_url": "https://github.com/glomatico/gamdl",
                     "modified_by": "@Mrgu2",
-                    "modified_project_url": "https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download",
+                    "modified_project_url": "https://github.com/Mrgu2/gu_music_downloader",
                     "download_safety_note": "请确保从 GitHub @Mrgu2 下载该软件，以保证软件安全、没有后门且来源可核验。",
                     "alac_max_spec": "24-bit / 192 kHz",
                     "alac_spec_note": "具体取决于歌曲本身是否提供对应规格。",
@@ -753,9 +753,9 @@ class WebGuiServer(ThreadingHTTPServer):
             file_actions_supported=self.file_actions.supported,
             conversion_supported=ffmpeg.available,
             conversion_message=(
-                f"转换功能可用，ffmpeg 来源：{'内置' if ffmpeg.source == 'bundled' else '系统'}。"
+                "ffmpeg 可用。"
                 if ffmpeg.available
-                else "当前环境缺少 ffmpeg，转换功能不可用。"
+                else "未检测到 ffmpeg。"
             ),
         )
 
@@ -859,6 +859,7 @@ INDEX_HTML = """<!doctype html>
         linear-gradient(180deg, #f8f9fb 0%, var(--bg) 100%);
       color: var(--ink);
       font-family: "SF Pro Display", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+      transition: background .24s ease, color .24s ease;
     }
     .app-shell {
       min-height: 100vh;
@@ -933,7 +934,7 @@ INDEX_HTML = """<!doctype html>
       cursor: pointer;
       transition: .18s ease;
     }
-    .nav-btn:hover {
+    .nav-btn:hover:not(.active) {
       background: var(--accent-soft);
       border-color: var(--line);
     }
@@ -1564,23 +1565,453 @@ INDEX_HTML = """<!doctype html>
       gap: 10px;
       flex-wrap: wrap;
     }
+    .surface {
+      position: relative;
+      background: linear-gradient(180deg, rgba(255,255,255,.97) 0%, rgba(248,244,239,.94) 100%);
+      border: 1px solid rgba(255,255,255,.92);
+      border-radius: 28px;
+      box-shadow: 0 20px 44px rgba(58, 35, 28, .10);
+      overflow: hidden;
+    }
+    body {
+      background:
+        radial-gradient(circle at top left, rgba(255,255,255,.94), transparent 22%),
+        radial-gradient(circle at 82% 8%, rgba(255, 73, 120, .12), transparent 28%),
+        linear-gradient(180deg, #f7f3ee 0%, #efe8df 100%);
+    }
+    .app-shell {
+      width: min(1560px, calc(100vw - 32px));
+      margin: 0 auto;
+      min-height: 100vh;
+      padding: 16px 0 24px;
+      gap: 16px;
+      grid-template-columns: 280px minmax(0, 1fr);
+      align-items: start;
+    }
+    .sidebar, .main-panel {
+      background: rgba(255,255,255,.76);
+      border: 1px solid rgba(255,255,255,.88);
+      border-radius: 30px;
+      box-shadow: 0 22px 52px rgba(69, 38, 29, .12);
+    }
+    .sidebar {
+      position: sticky;
+      top: 16px;
+      max-height: calc(100vh - 32px);
+      background:
+        radial-gradient(circle at top left, rgba(255,255,255,.98), transparent 34%),
+        linear-gradient(180deg, rgba(255,255,255,.92) 0%, rgba(247,241,234,.9) 100%);
+      padding: 18px 14px;
+      gap: 14px;
+    }
+    .brand {
+      padding: 14px 14px 18px;
+      border-bottom: 1px solid rgba(214, 205, 195, .58);
+    }
+    .brand h1 {
+      font-size: 31px;
+      line-height: .98;
+    }
+    .brand p,
+    .sidebar-foot {
+      color: #74685f;
+    }
+    .nav {
+      gap: 8px;
+    }
+    .nav-btn {
+      border-radius: 16px;
+      font-weight: 600;
+    }
+    .nav-btn.active {
+      background: linear-gradient(135deg, #ff496a 0%, #d21b52 100%);
+      border-color: transparent;
+      box-shadow: 0 16px 28px rgba(210, 27, 82, .22);
+    }
+    .main-panel {
+      min-height: calc(100vh - 40px);
+      padding: 28px 30px 30px;
+      gap: 20px;
+      background:
+        radial-gradient(circle at top right, rgba(255,255,255,.92), transparent 28%),
+        linear-gradient(180deg, rgba(255,255,255,.78) 0%, rgba(248,242,236,.72) 100%);
+    }
+    .topbar {
+      padding: 2px 2px 4px;
+    }
+    .topbar > div:first-child {
+      display: grid;
+      gap: 6px;
+    }
+    .topbar h2 {
+      font-size: 40px;
+      line-height: .94;
+    }
+    .status-chip {
+      background: rgba(255,255,255,.72);
+      border-color: rgba(211, 216, 224, .84);
+      color: #74685f;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.92);
+    }
+    .dot {
+      box-shadow: 0 0 0 5px rgba(195, 200, 208, .18);
+    }
+    .page {
+      gap: 16px;
+    }
+    .page.active {
+      animation: page-rise .36s ease both;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.95) 0%, rgba(249,245,240,.92) 100%);
+      border: 1px solid rgba(226, 229, 234, .9);
+      border-radius: 24px;
+      box-shadow: 0 12px 30px rgba(58, 35, 28, .06);
+    }
+    .card-head {
+      padding: 20px 24px 14px;
+      border-bottom-color: rgba(226, 229, 234, .85);
+    }
+    .card-body {
+      padding: 20px 24px 24px;
+    }
+    .list-item,
+    .stat,
+    .preview-row {
+      border-color: rgba(223, 216, 208, .88);
+      background: rgba(255,255,255,.76);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.74);
+    }
+    .eyebrow {
+      font-size: 11px;
+      line-height: 1;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: #8c7f74;
+    }
+    .download-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1.28fr) minmax(320px, .82fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .composer-panel,
+    .workspace-side > article,
+    .preview-panel {
+      min-width: 0;
+    }
+    .workspace-side {
+      display: grid;
+      gap: 16px;
+    }
+    .section-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 24px 26px 0;
+    }
+    .section-heading h3 {
+      margin: 6px 0 0;
+      font-size: 24px;
+      letter-spacing: -.04em;
+    }
+    .section-body {
+      display: grid;
+      gap: 18px;
+      padding: 20px 26px 26px;
+    }
+    .textarea-shell {
+      padding: 16px 18px;
+      border-radius: 24px;
+      background: rgba(255,255,255,.62);
+      border: 1px solid rgba(221, 213, 203, .88);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.74);
+    }
+    .textarea-shell textarea {
+      min-height: 242px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .textarea-shell textarea:focus {
+      box-shadow: none;
+    }
+    .action-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .quick-note-list {
+      display: grid;
+      gap: 10px;
+    }
+    .quick-note {
+      display: grid;
+      gap: 4px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(122, 36, 62, .04);
+      border: 1px solid rgba(215, 197, 203, .86);
+    }
+    .quick-note strong {
+      font-size: 15px;
+      letter-spacing: -.02em;
+    }
+    .account-stack {
+      display: grid;
+      gap: 14px;
+    }
+    .account-card {
+      display: grid;
+      gap: 10px;
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255,255,255,.72);
+      border: 1px solid rgba(221, 213, 203, .88);
+    }
+    .readiness-list {
+      display: grid;
+      gap: 2px;
+      padding: 6px 26px 26px;
+    }
+    .readiness-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px 0;
+      border-top: 1px solid rgba(223, 216, 208, .82);
+    }
+    .readiness-row:first-child {
+      border-top: 0;
+      padding-top: 8px;
+    }
+    .readiness-row strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 15px;
+      letter-spacing: -.02em;
+    }
+    .preview-panel .section-heading {
+      padding-bottom: 0;
+    }
+    .download-bottom-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(320px, .95fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .preview-grid {
+      display: grid;
+      gap: 10px;
+      padding: 20px 26px 26px;
+    }
+    .preview-row {
+      grid-template-columns: 128px 132px 1fr;
+      border-radius: 18px;
+      padding: 14px 16px;
+    }
+    .empty-state {
+      padding: 18px 18px 20px;
+      border-radius: 20px;
+      background: rgba(255,255,255,.68);
+      border: 1px dashed rgba(213, 205, 196, .9);
+      color: #74685f;
+      line-height: 1.6;
+    }
+    .compact-job-list {
+      display: grid;
+      gap: 10px;
+      padding: 20px 26px 26px;
+    }
+    .compact-job-item {
+      display: grid;
+      gap: 10px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,.76);
+      border: 1px solid rgba(223, 216, 208, .88);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.74);
+    }
+    .compact-job-item pre {
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 92px;
+      overflow: auto;
+    }
+    .btn.primary {
+      background: linear-gradient(135deg, #ff496a 0%, #d21b52 100%);
+      border-color: transparent;
+      box-shadow: 0 14px 24px rgba(210, 27, 82, .22);
+    }
+    .btn.soft {
+      background: rgba(255,255,255,.68);
+    }
+    .badge {
+      background: rgba(255,255,255,.74);
+      border-color: rgba(226, 229, 234, .92);
+    }
+    .badge.success {
+      background: rgba(18, 126, 85, .08);
+    }
+    .badge.warn {
+      background: rgba(178, 93, 17, .08);
+    }
+    .badge.danger {
+      background: rgba(165, 51, 44, .08);
+    }
+    body[data-theme="cool"] {
+      background:
+        radial-gradient(circle at top left, rgba(255,255,255,.92), transparent 22%),
+        linear-gradient(180deg, #f8f9fb 0%, #eef2f7 100%);
+    }
+    body[data-theme="cool"] .sidebar,
+    body[data-theme="cool"] .main-panel {
+      background: rgba(255,255,255,.88);
+      border: 1px solid rgba(255,255,255,.86);
+      box-shadow: 0 18px 48px rgba(15, 23, 42, .08);
+    }
+    body[data-theme="cool"] .sidebar {
+      background:
+        radial-gradient(circle at top left, rgba(255,255,255,.98), transparent 34%),
+        linear-gradient(180deg, rgba(255,255,255,.96) 0%, rgba(243,246,250,.94) 100%);
+    }
+    body[data-theme="cool"] .main-panel {
+      background:
+        radial-gradient(circle at top right, rgba(255,255,255,.94), transparent 28%),
+        linear-gradient(180deg, rgba(255,255,255,.84) 0%, rgba(244,247,251,.8) 100%);
+    }
+    body[data-theme="cool"] .brand,
+    body[data-theme="cool"] .sidebar-foot {
+      color: #667085;
+    }
+    body[data-theme="cool"] .nav-btn.active,
+    body[data-theme="cool"] .btn.primary {
+      background: linear-gradient(135deg, #0a84ff 0%, #2879ff 100%);
+      border-color: #0a84ff;
+      box-shadow: 0 10px 18px rgba(10, 132, 255, .18);
+    }
+    body[data-theme="cool"] .nav-btn:hover:not(.active) {
+      background: rgba(10, 132, 255, .06);
+      border-color: rgba(148, 163, 184, .22);
+    }
+    body[data-theme="cool"] .btn.soft,
+    body[data-theme="cool"] .split-pill-anchor,
+    body[data-theme="cool"] .segment {
+      background: #f2f4f7;
+      border-color: #e2e5ea;
+    }
+    body[data-theme="cool"] .card,
+    body[data-theme="cool"] .surface,
+    body[data-theme="cool"] .list-item,
+    body[data-theme="cool"] .stat,
+    body[data-theme="cool"] .preview-row,
+    body[data-theme="cool"] .compact-job-item,
+    body[data-theme="cool"] .account-card,
+    body[data-theme="cool"] .quick-note,
+    body[data-theme="cool"] .empty-state {
+      background: rgba(250,251,252,.98);
+      border-color: #e2e5ea;
+      box-shadow: 0 4px 18px rgba(15, 23, 42, .04);
+    }
+    body[data-theme="cool"] .textarea-shell,
+    body[data-theme="cool"] .status-chip {
+      background: rgba(255,255,255,.9);
+      border-color: #e2e5ea;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.78);
+      color: #667085;
+    }
+    body[data-theme="cool"] .badge {
+      background: #f5f7fa;
+      border-color: #e7ebf0;
+      color: #667085;
+    }
+    body[data-theme="cool"] .badge.success { color: #0e7c4f; background: rgba(14,124,79,.08); }
+    body[data-theme="cool"] .badge.warn { color: #b25d11; background: rgba(178,93,17,.08); }
+    body[data-theme="cool"] .badge.danger { color: #a5332c; background: rgba(165,51,44,.08); }
+    body[data-theme="cool"] textarea,
+    body[data-theme="cool"] input,
+    body[data-theme="cool"] select {
+      border-color: #d3d8e0;
+      background: #fff;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.78);
+    }
+    body[data-theme="cool"] select {
+      background-color: #f3f4f6;
+      border-color: #e4e7ec;
+    }
+    body[data-theme="cool"] .eyebrow,
+    body[data-theme="cool"] .muted,
+    body[data-theme="cool"] .lead,
+    body[data-theme="cool"] .field label {
+      color: #667085;
+    }
+    @keyframes page-rise {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    @media (max-width: 1320px) {
+      .download-shell,
+      .download-bottom-grid {
+        grid-template-columns: 1fr;
+      }
+    }
     @media (max-width: 1180px) {
       .app-shell { grid-template-columns: 1fr; }
       .grid.two { grid-template-columns: 1fr; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .setup-shell { grid-template-columns: 1fr; }
       .setup-hero { min-height: auto; }
+      .sidebar {
+        position: static;
+        max-height: none;
+      }
+      .hero-stat-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 760px) {
+      .app-shell {
+        width: calc(100vw - 20px);
+        padding-top: 10px;
+      }
+      .main-panel {
+        padding: 22px 18px 20px;
+      }
+      .section-heading,
+      .section-body,
+      .readiness-list,
+      .preview-grid {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .preview-row {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
-<body>
+<body data-theme="warm">
   <div class="setup-overlay" id="setup-overlay">
     <div class="setup-shell">
       <section class="setup-hero">
         <div>
           <div class="setup-kicker">Welcome / Setup</div>
-          <h1>先把入口配置好，再开始下载。</h1>
-          <p>首次使用前，请先选择下载目录，并登录你的 Apple Music 账号。完成后就可以直接开始下载。</p>
+          <h1>完成首次设置</h1>
+          <p>首次使用需要先选择下载目录并完成登录。</p>
           <div class="setup-points">
             <div class="setup-point">
               <strong>下载目录</strong>
@@ -1609,8 +2040,8 @@ INDEX_HTML = """<!doctype html>
                 <span class="setup-step-index">1</span>
                 <div>
                   <strong>选择下载目录</strong>
-                  <div class="muted">建议保留在 `~/Downloads/Apple Music Downloader`，也可以改成你想要的目标位置。</div>
-                  <div class="muted">默认推荐使用 AAC；如果你已经配置好外部 wrapper，也可以选择 ALAC 或杜比全景声。</div>
+                  <div class="muted">选择下载目录。</div>
+                  <div class="muted">默认使用 AAC。</div>
                 </div>
               </div>
               <span class="badge" id="setup-path-badge">待确认</span>
@@ -1621,7 +2052,7 @@ INDEX_HTML = """<!doctype html>
                 <input id="setup-output-path" type="text" readonly />
                 <button class="btn" id="setup-select-output-btn" type="button">选择文件夹</button>
               </div>
-              <div class="muted" id="setup-output-path-copy">使用“选择文件夹”即可写入下载目录。</div>
+              <div class="muted" id="setup-output-path-copy">设置下载目录。</div>
             </div>
           </div>
           <div class="setup-step">
@@ -1630,7 +2061,7 @@ INDEX_HTML = """<!doctype html>
                 <span class="setup-step-index">2</span>
                 <div>
                   <strong>完成 Apple Music 登录</strong>
-                  <div class="muted" id="setup-login-copy">内置登录是主路径。浏览器导入适合你已经在本机浏览器里登录过 Apple Music 的情况。</div>
+                  <div class="muted" id="setup-login-copy">登录 Apple Music 账号。</div>
                 </div>
               </div>
               <span class="badge" id="setup-login-badge">待登录</span>
@@ -1649,7 +2080,7 @@ INDEX_HTML = """<!doctype html>
           </div>
           <div class="setup-complete">
             <button class="btn primary" id="complete-setup-btn" disabled>完成首次设置</button>
-            <div class="setup-status" id="setup-complete-status">完成登录并确认下载目录后，才能进入主界面。</div>
+            <div class="setup-status" id="setup-complete-status">完成后进入主界面。</div>
           </div>
         </div>
       </section>
@@ -1686,7 +2117,7 @@ INDEX_HTML = """<!doctype html>
             <h1>Apple Music Downloader</h1>
           </div>
         </div>
-        <p>下载歌曲、专辑和歌单。默认支持 AAC；如果已经配置外部 wrapper，也可以使用 ALAC 和杜比全景声。</p>
+        <p>用于下载 Apple Music 歌曲、专辑和歌单。</p>
       </div>
       <nav class="nav">
         <button class="nav-btn active" data-page="download">下载</button>
@@ -1703,65 +2134,143 @@ INDEX_HTML = """<!doctype html>
     </aside>
     <main class="main-panel">
       <div class="topbar">
-        <h2 id="page-title">下载</h2>
+        <div>
+          <div class="eyebrow">桌面应用</div>
+          <h2 id="page-title">下载</h2>
+        </div>
         <div class="status-chip"><span class="dot" id="session-dot"></span><span id="session-summary">正在读取登录状态</span></div>
       </div>
 
       <section class="page active" id="page-download">
-        <div class="grid two">
-          <article class="card">
-            <div class="card-head">
-              <h3>新建下载任务</h3>
+        <div class="download-shell">
+          <article class="surface composer-panel">
+            <div class="section-heading">
+              <div>
+                <div class="eyebrow">新建任务</div>
+                <h3>新建下载任务</h3>
+              </div>
               <button class="btn soft" id="preview-btn">预览链接</button>
             </div>
-            <div class="card-body grid">
-              <p class="lead">支持歌曲、专辑和歌单。AAC 可直接使用；ALAC 和杜比全景声需要你先配置外部 wrapper。</p>
-              <div class="field">
-                <label for="url-input">Apple Music 链接</label>
-                <textarea id="url-input" placeholder="每行一个链接，或者直接粘贴多个链接"></textarea>
+            <div class="section-body">
+              <p class="lead">支持歌曲、专辑和歌单。</p>
+              <div class="textarea-shell">
+                <div class="field">
+                  <label for="url-input">Apple Music 链接</label>
+                  <textarea id="url-input" placeholder="每行一个链接，或者直接粘贴多个链接"></textarea>
+                </div>
               </div>
-              <div class="inline">
+              <div class="action-row">
                 <button class="btn primary" id="submit-job-btn">加入下载队列</button>
-                <span class="muted" id="preview-summary">尚未预览</span>
+                <span class="muted" id="preview-summary">未预览</span>
+              </div>
+              <div class="quick-note-list">
+                <div class="quick-note">
+                  <strong>AAC</strong>
+                  <span class="muted">可直接下载。</span>
+                </div>
+                <div class="quick-note">
+                  <strong>ALAC / 杜比全景声</strong>
+                  <span class="muted">先在设置里确认 wrapper 状态，再切高音质模式</span>
+                </div>
               </div>
             </div>
           </article>
-          <article class="card">
-            <div class="card-head">
-              <h3>当前账号</h3>
-            </div>
-            <div class="card-body grid">
-              <div class="list-item">
-                <div class="list-head">
-                  <strong id="account-headline">未登录</strong>
-                  <span class="badge" id="account-method">No Session</span>
+
+          <aside class="workspace-side">
+            <article class="surface">
+              <div class="section-heading">
+                <div>
+                  <div class="eyebrow">账号会话</div>
+                  <h3>当前账号</h3>
                 </div>
-                <div class="muted" id="account-detail">登录后会在这里显示 storefront、订阅和限制信息。</div>
               </div>
-              <div class="inline">
-                <button class="btn primary" id="login-webview-btn">内置登录</button>
-                <select id="browser-select" style="max-width: 180px">
-                  <option value="chrome">Chrome</option>
-                  <option value="edge">Edge</option>
-                  <option value="brave">Brave</option>
-                  <option value="firefox">Firefox</option>
-                </select>
-                <button class="btn" id="browser-import-btn">导入浏览器登录态</button>
+              <div class="section-body account-stack">
+                <div class="account-card">
+                  <div class="list-head">
+                    <strong id="account-headline">未登录</strong>
+                    <span class="badge" id="account-method">No Session</span>
+                  </div>
+                  <div class="muted" id="account-detail">显示当前账号状态。</div>
+                </div>
+                <div class="inline">
+                  <button class="btn primary" id="login-webview-btn">内置登录</button>
+                  <select id="browser-select" style="max-width: 180px">
+                    <option value="chrome">Chrome</option>
+                    <option value="edge">Edge</option>
+                    <option value="brave">Brave</option>
+                    <option value="firefox">Firefox</option>
+                  </select>
+                  <button class="btn" id="browser-import-btn">导入浏览器登录态</button>
+                </div>
               </div>
+            </article>
+
+            <article class="surface">
+              <div class="section-heading">
+                <div>
+                  <div class="eyebrow">环境检查</div>
+                  <h3>当前环境</h3>
+                </div>
+              </div>
+              <div class="readiness-list">
+                <div class="readiness-row">
+                  <div>
+                    <strong>下载目录</strong>
+                    <div class="muted" id="workspace-path-detail">尚未设置下载目录。</div>
+                  </div>
+                  <span class="badge" id="workspace-path-badge-inline">待确认</span>
+                </div>
+                <div class="readiness-row">
+                  <div>
+                    <strong>Apple Music 登录</strong>
+                    <div class="muted" id="workspace-session-detail">未检测到可用会话。</div>
+                  </div>
+                  <span class="badge" id="workspace-session-badge-inline">未登录</span>
+                </div>
+                <div class="readiness-row">
+                  <div>
+                    <strong>Wrapper 状态</strong>
+                    <div class="muted" id="workspace-wrapper-detail">高音质和杜比全景声需要外部 wrapper。</div>
+                  </div>
+                  <span class="badge" id="workspace-wrapper-badge-inline">AAC 模式</span>
+                </div>
+                <div class="readiness-row">
+                  <div>
+                    <strong>FFmpeg 转换</strong>
+                    <div class="muted" id="workspace-convert-detail">检测 ffmpeg 中</div>
+                  </div>
+                  <span class="badge" id="workspace-convert-badge-inline">检测中</span>
+                </div>
+              </div>
+            </article>
+          </aside>
+        </div>
+
+        <div class="download-bottom-grid">
+          <article class="surface preview-panel">
+            <div class="section-heading">
+              <div>
+                <div class="eyebrow">链接预览</div>
+                <h3>链接预览</h3>
+              </div>
+            </div>
+            <div class="preview-grid" id="preview-list">
+              <div class="empty-state">显示链接类型和支持状态。</div>
+            </div>
+          </article>
+
+          <article class="surface">
+            <div class="section-heading">
+              <div>
+                <div class="eyebrow">最近任务</div>
+                <h3>队列摘要</h3>
+              </div>
+            </div>
+            <div class="compact-job-list" id="download-jobs-compact">
+              <div class="empty-state">暂无任务。</div>
             </div>
           </article>
         </div>
-
-        <article class="card">
-          <div class="card-head">
-            <h3>链接预览</h3>
-          </div>
-          <div class="card-body">
-            <div class="preview-table" id="preview-list">
-              <div class="muted">预览后会显示链接类型和是否在桌面版支持范围内。</div>
-            </div>
-          </div>
-        </article>
       </section>
 
       <section class="page" id="page-account">
@@ -1771,7 +2280,7 @@ INDEX_HTML = """<!doctype html>
             <button class="btn danger" id="logout-btn">退出登录</button>
           </div>
           <div class="card-body grid">
-            <p class="lead" id="account-login-copy">内置登录适合作为主路径；浏览器导入适合作为兜底。两种方式都只读取你自己的 Apple Music 会话，登录态保存在本机私有目录和 Keychain。</p>
+            <p class="lead" id="account-login-copy">支持内置登录和浏览器导入，登录状态保存在本机和 Keychain。</p>
             <div class="list" id="account-status-list"></div>
           </div>
         </article>
@@ -1802,7 +2311,7 @@ INDEX_HTML = """<!doctype html>
             <button class="btn primary" id="submit-convert-btn">加入转换队列</button>
           </div>
           <div class="card-body grid">
-            <p class="lead" id="convert-copy">ffmpeg 转换，默认保持原采样率；无损格式保持原位深；封面与常见标签会被复制。</p>
+            <p class="lead" id="convert-copy">使用 ffmpeg 转换本地文件。</p>
             <div class="grid two">
               <div class="field">
                 <label for="convert-input-mode">输入路径类型</label>
@@ -1826,7 +2335,7 @@ INDEX_HTML = """<!doctype html>
                 <button class="btn" id="select-convert-file-btn" type="button">选择文件</button>
                 <button class="btn" id="select-convert-input-folder-btn" type="button">选择目录</button>
               </div>
-              <div class="muted" id="convert-input-copy">可以直接使用“选择文件”或“选择文件夹”填写转换输入路径。</div>
+              <div class="muted" id="convert-input-copy">选择输入文件或目录。</div>
             </div>
             <div class="field">
               <label for="convert-output-path">输出目录</label>
@@ -1834,14 +2343,14 @@ INDEX_HTML = """<!doctype html>
                 <input id="convert-output-path" type="text" />
                 <button class="btn" id="select-convert-output-btn" type="button">选择文件夹</button>
               </div>
-              <div class="muted" id="convert-output-copy">转换输出目录默认跟随当前下载目录，也可以单独改。</div>
+              <div class="muted" id="convert-output-copy">选择输出目录。</div>
             </div>
             <div class="list-item">
               <div class="list-head">
                 <strong>当前可用性</strong>
                 <span class="badge" id="convert-runtime-badge">检测中</span>
               </div>
-              <div class="muted" id="convert-runtime-copy">正在检测 ffmpeg。</div>
+              <div class="muted" id="convert-runtime-copy">检测 ffmpeg 中</div>
             </div>
           </div>
         </article>
@@ -1876,7 +2385,7 @@ INDEX_HTML = """<!doctype html>
                 <input id="output-path" type="text" readonly />
                 <button class="btn" id="select-output-btn" type="button">选择文件夹</button>
               </div>
-              <div class="muted" id="output-path-copy">使用“选择文件夹”即可写入下载目录。</div>
+              <div class="muted" id="output-path-copy">设置下载目录。</div>
             </div>
             <div class="grid two">
               <div class="field">
@@ -1906,10 +2415,26 @@ INDEX_HTML = """<!doctype html>
                 </select>
               </div>
               <div class="field">
+                <label for="theme-select">界面主题</label>
+                <select id="theme-select">
+                  <option value="warm">暖色</option>
+                  <option value="cool">白蓝灰</option>
+                </select>
+              </div>
+            </div>
+            <div class="grid two">
+              <div class="field">
                 <label for="overwrite">覆盖已存在文件</label>
                 <select id="overwrite">
                   <option value="false">关闭</option>
                   <option value="true">开启</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="browser-import-enabled">浏览器导入</label>
+                <select id="browser-import-enabled">
+                  <option value="true">允许</option>
+                  <option value="false">关闭</option>
                 </select>
               </div>
             </div>
@@ -1921,13 +2446,6 @@ INDEX_HTML = """<!doctype html>
                   <option value="false">关闭</option>
                 </select>
               </div>
-              <div class="field">
-                <label for="browser-import-enabled">浏览器导入</label>
-                <select id="browser-import-enabled">
-                  <option value="true">允许</option>
-                  <option value="false">关闭</option>
-                </select>
-              </div>
             </div>
             <div class="field">
               <label for="wrapper-decrypt-ip">Wrapper 解密地址</label>
@@ -1936,9 +2454,9 @@ INDEX_HTML = """<!doctype html>
             <div class="field" id="open-file-application-field">
               <label for="open-file-application">打开文件应用（可选）</label>
               <input id="open-file-application" type="text" placeholder="Windows 可填 exe 完整路径，例如 C:\\Program Files\\VLC\\vlc.exe" />
-              <div class="muted">仅 Windows 简化模式会用到这个值，作为“打开方式”菜单里的自定义应用兜底。</div>
+              <div class="muted">仅 Windows 使用。</div>
             </div>
-            <p class="lead" id="wrapper-status-copy">正式分发版默认使用 AAC。只有当外部 wrapper 已运行或可启动时，才建议切换到 ALAC 或杜比全景声。</p>
+            <p class="lead" id="wrapper-status-copy">高音质和杜比全景声需要外部 wrapper。</p>
           </div>
         </article>
       </section>
@@ -1950,7 +2468,7 @@ INDEX_HTML = """<!doctype html>
             <button class="btn" id="export-diagnostics-btn">导出诊断包</button>
           </div>
           <div class="card-body grid">
-            <p class="lead">Apple Music Downloader 用于下载歌曲、专辑和歌单。默认支持 AAC；如果已经配置外部 wrapper，也可以使用 ALAC 和杜比全景声。请确保从 GitHub 官方项目页下载，以保证来源可核验。</p>
+            <p class="lead">用于下载 Apple Music 歌曲、专辑和歌单。</p>
             <div class="list" id="about-list"></div>
           </div>
         </article>
@@ -2184,6 +2702,131 @@ docker stop wrapper-latest-10022</pre>
       return statusMap[status] || [status, 'badge'];
     }
 
+    function setNodeText(id, value) {
+      const node = document.getElementById(id);
+      if (node) {
+        node.textContent = value;
+      }
+    }
+
+    function setNodeBadge(id, value, tone = 'default') {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.textContent = value;
+      const toneClass = tone === 'success'
+        ? 'badge success'
+        : tone === 'warn'
+          ? 'badge warn'
+          : tone === 'danger'
+            ? 'badge danger'
+            : 'badge';
+      node.className = toneClass;
+    }
+
+    function codecLabel(codec) {
+      const labelMap = {
+        'aac-legacy': 'AAC',
+        alac: 'ALAC',
+        atmos: '杜比全景声',
+      };
+      return labelMap[codec] || (codec || 'AAC');
+    }
+
+    function compactPath(path) {
+      const value = String(path || '').trim();
+      if (!value) return '未设置';
+      const normalized = value.replace(/^\/Users\/[^/]+/, '~');
+      if (normalized.length <= 34) {
+        return normalized;
+      }
+      const parts = normalized.split('/');
+      if (parts.length <= 3) {
+        return normalized;
+      }
+      return `.../${parts.slice(-2).join('/')}`;
+    }
+
+    function applyTheme(theme) {
+      const resolvedTheme = theme === 'cool' ? 'cool' : 'warm';
+      document.body.dataset.theme = resolvedTheme;
+      const selector = document.getElementById('theme-select');
+      if (selector && selector.value !== resolvedTheme) {
+        selector.value = resolvedTheme;
+      }
+    }
+
+    function loginMethodLabel(session) {
+      const method = String(session?.login_method || '').trim();
+      if (method === 'webview') return '内置登录';
+      if (method === 'browser-import') return '浏览器导入';
+      if (method === 'saved-session') return '本地会话';
+      return method || '未知方式';
+    }
+
+    function syncDownloadWorkspace() {
+      const counts = { queued: 0, running: 0, completed: 0, failed: 0 };
+      (state.jobs || []).forEach((job) => {
+        if (counts[job.status] !== undefined) {
+          counts[job.status] += 1;
+        }
+      });
+
+      setNodeText('dashboard-queued', String(counts.queued));
+      setNodeText('dashboard-running', String(counts.running));
+      setNodeText('dashboard-completed', String(counts.completed));
+      setNodeText('dashboard-failed', String(counts.failed));
+
+      const outputPath = String(state.settings?.output_path || '').trim();
+      const session = state.session;
+      const runtime = state.runtime;
+      const wrapperStatus = state.wrapperStatus;
+      const codec = codecLabel(state.settings?.song_codec || 'aac-legacy');
+      const codecSummary = codec !== 'AAC' && !wrapperStatus?.available
+        ? `音质 ${codec}（需 wrapper）`
+        : `音质 ${codec}`;
+      const hasSession = Boolean(session && session.connected);
+      const sessionLabel = hasSession
+        ? (session.active_subscription ? '账号已连接' : '账号已登录')
+        : '账号未连接';
+      const sessionDetail = hasSession
+        ? (session.active_subscription ? '已连接 Apple Music，可直接开始下载。' : '已登录，但未检测到有效订阅')
+        : (session?.last_error || '未检测到可用会话。');
+      const sessionTone = hasSession ? (session.active_subscription ? 'success' : 'warn') : 'default';
+
+      const wrapperAvailable = Boolean(wrapperStatus?.available);
+      const wrapperBadge = wrapperAvailable
+        ? (wrapperStatus.mode === 'docker' ? 'Docker 可用' : '外部可用')
+        : (wrapperStatus?.mode === 'docker' ? '待启动' : 'AAC 模式');
+      const wrapperTone = wrapperAvailable ? 'success' : (wrapperStatus?.mode === 'docker' ? 'warn' : 'default');
+
+      const convertTone = runtime?.conversion_supported ? 'success' : 'danger';
+      const convertBadge = runtime
+        ? (runtime.conversion_supported ? '可用' : '不可用')
+        : '检测中';
+
+      setNodeText('download-summary-session', sessionLabel);
+      setNodeText('download-summary-codec', codecSummary);
+      setNodeText('download-summary-path', outputPath ? `目录 ${compactPath(outputPath)}` : '目录未设置');
+
+      setNodeText('workspace-path-detail', outputPath ? outputPath : '尚未设置下载目录。');
+      setNodeBadge('workspace-path-badge-inline', outputPath ? '已确认' : '待确认', outputPath ? 'success' : 'default');
+
+      setNodeText('workspace-session-detail', sessionDetail);
+      setNodeBadge('workspace-session-badge-inline', hasSession ? (session.active_subscription ? '已连接' : '已登录') : '未登录', sessionTone);
+
+      setNodeText(
+        'workspace-wrapper-detail',
+        wrapperStatus?.message || '正式分发版默认使用 AAC；高音质模式依赖外部 wrapper。',
+      );
+      setNodeBadge('workspace-wrapper-badge-inline', wrapperBadge, wrapperTone);
+
+      setNodeText(
+        'workspace-convert-detail',
+        runtime?.conversion_message || '检测 ffmpeg 中',
+      );
+      setNodeBadge('workspace-convert-badge-inline', convertBadge, runtime ? convertTone : 'default');
+    }
+
     function renderSession(session) {
       state.session = session;
       const dot = document.getElementById('session-dot');
@@ -2195,32 +2838,35 @@ docker stop wrapper-latest-10022</pre>
 
       if (!session || !session.connected) {
         dot.className = 'dot';
-        summary.textContent = session?.last_error || '未登录';
+        summary.textContent = session?.last_error || 'Apple Music 未登录';
         headline.textContent = '未登录';
-        method.textContent = 'No Session';
+        method.textContent = '未登录';
         method.className = 'badge';
         detail.textContent = state.runtime?.native_login_supported
           ? '请先完成内置登录或浏览器导入。'
           : '请先在本机浏览器登录 Apple Music，再导入浏览器登录态。';
         accountList.innerHTML = '<div class="list-item"><div class="muted">当前没有可用会话。</div></div>';
         document.getElementById('setup-login-status').textContent = session?.last_error || '未检测到可用会话。';
+        syncDownloadWorkspace();
         syncSetupOverlay();
         return;
       }
 
       dot.className = session.active_subscription ? 'dot success' : 'dot warn';
-      summary.textContent = `已连接 ${session.storefront || 'unknown'} · ${session.login_method || 'saved-session'}`;
-      headline.textContent = `Storefront: ${session.storefront || 'unknown'}`;
-      method.textContent = session.login_method || 'saved-session';
+      summary.textContent = session.active_subscription
+        ? 'Apple Music 账号已连接'
+        : '已登录，但未检测到有效订阅';
+      headline.textContent = session.active_subscription ? '账号已连接' : '账号已登录';
+      method.textContent = loginMethodLabel(session);
       method.className = 'badge success';
       detail.textContent = session.active_subscription
-        ? '账号订阅有效，可以开始下载。'
-        : '账号已登录，但未检测到可用订阅。';
+        ? '已连接 Apple Music，可直接开始下载。'
+        : '已登录，但未检测到有效订阅';
 
       const items = [
-        ['登录方式', session.login_method || 'unknown'],
+        ['登录方式', loginMethodLabel(session)],
         ['浏览器来源', session.browser || (state.runtime?.native_login_supported ? '内置登录' : '浏览器导入')],
-        ['Storefront', session.storefront || 'unknown'],
+        ['Storefront', String(session.storefront || 'unknown').toUpperCase()],
         ['语言', session.language || 'zh-CN'],
         ['订阅状态', session.active_subscription ? '有效' : '无效'],
       ];
@@ -2234,7 +2880,8 @@ docker stop wrapper-latest-10022</pre>
       `).join('');
       document.getElementById('setup-login-status').textContent = session.active_subscription
         ? `已登录 ${session.storefront || 'unknown'}，订阅状态有效。`
-        : '已登录，但未检测到可用订阅。';
+        : '已登录，但未检测到有效订阅';
+      syncDownloadWorkspace();
       syncSetupOverlay();
     }
 
@@ -2243,7 +2890,7 @@ docker stop wrapper-latest-10022</pre>
       summary.textContent = `${data.count} 个链接，${Object.entries(data.summary).map(([kind, count]) => `${kind} ${count}`).join(' / ') || '无'}`;
       const container = document.getElementById('preview-list');
       if (!data.preview.length) {
-        container.innerHTML = '<div class="muted">还没有可预览的链接。</div>';
+        container.innerHTML = '<div class="empty-state">显示链接类型和支持状态。</div>';
         return;
       }
       container.innerHTML = data.preview.map((item) => `
@@ -2271,6 +2918,8 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('stat-running').textContent = counts.running;
       document.getElementById('stat-completed').textContent = counts.completed;
       document.getElementById('stat-failed').textContent = counts.failed;
+      syncDownloadWorkspace();
+      renderCompactJobs(jobs);
 
       const list = document.getElementById('jobs-list');
       if (!jobs.length) {
@@ -2360,6 +3009,43 @@ docker stop wrapper-latest-10022</pre>
       }).join('');
     }
 
+    function renderCompactJobs(jobs) {
+      const container = document.getElementById('download-jobs-compact');
+      if (!container) return;
+      if (!jobs.length) {
+        container.innerHTML = '<div class="empty-state">暂无任务。</div>';
+        return;
+      }
+
+      const latestJobs = jobs
+        .slice()
+        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+        .slice(0, 3);
+
+      container.innerHTML = latestJobs.map((job) => {
+        const [statusLabel, statusClass] = badgeForStatus(job.status);
+        const isConvert = job.kind === 'convert';
+        const title = isConvert
+          ? (job.payload.input_mode === 'directory' ? '目录转换' : '文件转换')
+          : `${job.urls.length} 个链接`;
+        const meta = isConvert
+          ? `${(job.payload.target_format || '').toUpperCase()} · ${escapeHtml(job.payload.input_path || '')}`
+          : `${job.urls.slice(0, 2).map((url) => escapeHtml(url)).join('<br>')}${job.urls.length > 2 ? '<br>…' : ''}`;
+        const logTail = (job.logs || []).slice(-4).join('\\n') || '暂无日志';
+        return `
+          <div class="compact-job-item">
+            <div class="list-head">
+              <strong>${title}</strong>
+              <span class="${statusClass}">${statusLabel}</span>
+            </div>
+            <div class="muted">${new Date(job.created_at * 1000).toLocaleString()}</div>
+            <div class="muted">${meta}</div>
+            <pre>${escapeHtml(logTail)}</pre>
+          </div>
+        `;
+      }).join('');
+    }
+
     function renderLogs(channels) {
       state.logs = channels;
       const output = document.getElementById('logs-output');
@@ -2374,10 +3060,14 @@ docker stop wrapper-latest-10022</pre>
       const copy = document.getElementById('wrapper-status-copy');
       if (!copy) return;
       if (!wrapperStatus) {
-        copy.textContent = '正式分发版默认使用 AAC。只有当外部 wrapper 已运行或可启动时，才建议切换到 ALAC 或杜比全景声。';
+        copy.textContent = '高音质和杜比全景声需要外部 wrapper。';
+        syncDownloadWorkspace();
         return;
       }
-      copy.textContent = wrapperStatus.message || '正式分发版默认使用 AAC。只有当外部 wrapper 已运行或可启动时，才建议切换到 ALAC 或杜比全景声。';
+      copy.textContent = wrapperStatus.available
+        ? (wrapperStatus.message || '高音质和杜比全景声需要外部 wrapper。')
+        : '高音质和杜比全景声需要外部 wrapper。';
+      syncDownloadWorkspace();
     }
 
     function renderRuntime(runtime) {
@@ -2393,10 +3083,12 @@ docker stop wrapper-latest-10022</pre>
         button.title = runtime.native_login_supported ? '' : runtime.native_login_message;
       });
 
-      document.getElementById('setup-login-copy').textContent = runtime.native_login_message;
+      document.getElementById('setup-login-copy').textContent = runtime.native_login_supported
+        ? '登录 Apple Music 账号。'
+        : runtime.native_login_message;
       document.getElementById('account-login-copy').textContent = runtime.native_login_supported
-        ? '内置登录适合作为主路径；浏览器导入适合作为兜底。两种方式都只读取你自己的 Apple Music 会话，登录态保存在本机私有目录和 Keychain。'
-        : `${runtime.native_login_message} 当前这版会把登录态保存在本机私有目录和 Keychain。`;
+        ? '支持内置登录和浏览器导入，登录状态保存在本机和 Keychain。'
+        : runtime.native_login_message;
 
       const outputInputs = [
         document.getElementById('output-path'),
@@ -2418,10 +3110,10 @@ docker stop wrapper-latest-10022</pre>
         button.title = runtime.folder_picker_supported ? '' : runtime.output_path_message;
       });
 
-      document.getElementById('output-path-copy').textContent = runtime.output_path_message;
-      document.getElementById('setup-output-path-copy').textContent = runtime.output_path_message;
-      document.getElementById('convert-output-copy').textContent = runtime.output_path_message;
-      document.getElementById('convert-input-copy').textContent = runtime.input_path_message;
+      document.getElementById('output-path-copy').textContent = runtime.folder_picker_supported ? '设置下载目录。' : runtime.output_path_message;
+      document.getElementById('setup-output-path-copy').textContent = runtime.folder_picker_supported ? '设置下载目录。' : runtime.output_path_message;
+      document.getElementById('convert-output-copy').textContent = runtime.folder_picker_supported ? '选择输出目录。' : runtime.output_path_message;
+      document.getElementById('convert-input-copy').textContent = runtime.file_picker_supported ? '选择输入文件或目录。' : runtime.input_path_message;
       document.getElementById('open-file-application-field').style.display = runtime.platform === 'Windows' ? '' : 'none';
       document.getElementById('convert-runtime-copy').textContent = runtime.conversion_message;
       const convertRuntimeBadge = document.getElementById('convert-runtime-badge');
@@ -2448,6 +3140,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('submit-convert-btn').disabled = !runtime.conversion_supported;
       document.getElementById('submit-convert-btn').title = runtime.conversion_supported ? '' : runtime.conversion_message;
       syncConvertMode();
+      syncDownloadWorkspace();
       refreshJobs();
     }
 
@@ -2459,14 +3152,17 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('log-level').value = settings.log_level || 'INFO';
       document.getElementById('save-cover').value = String(settings.save_cover);
       document.getElementById('song-codec').value = settings.song_codec || 'aac-legacy';
+      document.getElementById('theme-select').value = settings.theme || 'warm';
       document.getElementById('overwrite').value = String(settings.overwrite);
       document.getElementById('use-wrapper').value = String(settings.use_wrapper);
       document.getElementById('wrapper-decrypt-ip').value = settings.wrapper_decrypt_ip || DEFAULT_WRAPPER_DECRYPT_IP;
       document.getElementById('open-file-application').value = settings.open_file_application || '';
       document.getElementById('browser-import-enabled').value = String(settings.browser_import_enabled);
+      applyTheme(settings.theme || 'warm');
       if (!document.getElementById('convert-output-path').value.trim()) {
         document.getElementById('convert-output-path').value = settings.output_path || '';
       }
+      syncDownloadWorkspace();
       renderRuntime(runtime);
       renderWrapperStatus(wrapperStatus);
       syncSetupOverlay();
@@ -2480,7 +3176,7 @@ docker stop wrapper-latest-10022</pre>
       const originalProjectName = data.original_project_name || 'Gamdl';
       const originalProjectUrl = data.original_project_url || 'https://github.com/glomatico/gamdl';
       const modifiedBy = data.modified_by || '@Mrgu2';
-      const modifiedProjectUrl = data.modified_project_url || 'https://github.com/Mrgu2/gamdl/tree/codex/fix-wrapper-alac-download';
+      const modifiedProjectUrl = data.modified_project_url || 'https://github.com/Mrgu2/gu_music_downloader';
       const downloadSafetyNote = data.download_safety_note || '请确保从 GitHub @Mrgu2 下载该软件，以保证软件安全、没有后门且来源可核验。';
       const alacMaxSpec = data.alac_max_spec || '24-bit / 192 kHz';
       const alacSpecNote = data.alac_spec_note || '具体取决于歌曲本身是否提供对应规格。';
@@ -2745,6 +3441,7 @@ docker stop wrapper-latest-10022</pre>
         log_level: document.getElementById('log-level').value,
         save_cover: document.getElementById('save-cover').value === 'true',
         song_codec: document.getElementById('song-codec').value,
+        theme: document.getElementById('theme-select').value,
         overwrite: document.getElementById('overwrite').value === 'true',
         use_wrapper: document.getElementById('use-wrapper').value === 'true',
         wrapper_decrypt_ip: document.getElementById('wrapper-decrypt-ip').value.trim(),
@@ -2866,7 +3563,7 @@ docker stop wrapper-latest-10022</pre>
         body: JSON.stringify({ browser }),
       });
       renderSession(data.session);
-      showToast(`已从 ${browser} 导入登录态`);
+      showToast(`已从 ${browser} 导入登录状态`);
     }
 
     async function setupLoginWithWebview() {
@@ -2881,7 +3578,7 @@ docker stop wrapper-latest-10022</pre>
       });
       renderSession(data.session);
       document.getElementById('browser-select').value = browser;
-      showToast(`已从 ${browser} 导入登录态`);
+      showToast(`已从 ${browser} 导入登录状态`);
     }
 
     async function logout() {
@@ -2925,6 +3622,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('select-convert-file-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-file', 'convert-input-path', '已选择输入文件')));
       document.getElementById('select-convert-input-folder-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-input-folder', 'convert-input-path', '已选择输入目录')));
       document.getElementById('convert-input-mode').addEventListener('change', syncConvertMode);
+      document.getElementById('theme-select').addEventListener('change', (event) => applyTheme(event.target.value));
       document.getElementById('login-webview-btn').addEventListener('click', () => runAction(loginWithWebview));
       document.getElementById('browser-import-btn').addEventListener('click', () => runAction(importFromBrowser));
       document.getElementById('setup-login-webview-btn').addEventListener('click', () => runAction(setupLoginWithWebview));

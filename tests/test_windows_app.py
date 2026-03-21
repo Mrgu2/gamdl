@@ -16,8 +16,8 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertFalse(runtime.native_login_supported)
         self.assertFalse(runtime.folder_picker_supported)
         self.assertTrue(runtime.file_actions_supported)
-        self.assertIn("不提供内置登录", runtime.native_login_message)
-        self.assertIn("不提供原生文件夹选择器", runtime.output_path_message)
+        self.assertIn("不支持内置登录", runtime.native_login_message)
+        self.assertIn("不支持文件夹选择器", runtime.output_path_message)
 
     @patch("gamdl.desktop_runtime.platform.system", return_value="Darwin")
     def test_macos_runtime_keeps_native_login_path(self, _mock_system):
