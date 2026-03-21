@@ -1,6 +1,6 @@
-# Apple Music Downloader 1.0.2
+# Apple Music Downloader 1.0.3
 
-[![Release](https://img.shields.io/badge/release-1.0.2-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.0.3-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 [![Windows Build](https://img.shields.io/github/actions/workflow/status/Mrgu2/gu_music_downloader/build-windows.yml?branch=codex%2Falac-download&label=windows%20build)](https://github.com/Mrgu2/gu_music_downloader/actions/workflows/build-windows.yml)
 
@@ -14,7 +14,7 @@
 
 ## 项目定位
 
-`Apple Music Downloader 1.0.2` 的目标很明确：
+`Apple Music Downloader 1.0.3` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -27,9 +27,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.2 发布内容
+## 1.0.3 发布内容
 
-正式版 `1.0.2` 交付两套桌面客户端：
+正式版 `1.0.3` 交付两套桌面客户端：
 
 - `Apple.Music.Downloader.dmg`
   - 面向 macOS
@@ -40,6 +40,14 @@
   - 由 GitHub Actions 在 `windows-latest` 上构建
 
 源码仓库仍然保留 CLI 与开发环境，适合高级用户自行构建或二次修改。
+
+本次版本主要收敛最近一轮 Codex 工作流里已经补齐测试的稳定性修正：
+
+- 登录态存取在 keyring 异常时会自动回退到本地 token 文件
+- 旧会话字段与脏 `wrapper_decrypt_ip` 不再轻易把设置页 / 关于页弄坏
+- `ALAC / 杜比全景声` 都会在桌面启动时预热 wrapper
+- 桌面 Web UI 侧边栏样式继续收口
+- `scripts/render_poster.py` 增加自动裁切和渲染参数
 
 ## 主要功能
 
@@ -104,7 +112,9 @@ macOS 包说明：
 Windows 包说明：
 
 - 继续沿用之前 release 的 zip 分发形式
-- 当前构建由 GitHub Actions 自动生成
+- 当前 release 的 Windows 包仍主要通过 GitHub Actions 生成
+- 尚未在真实 Windows 机器上进行测试
+- 如需重新构建或调试，推荐使用 Claude Code 或 Codex
 - 目前主要做过构建级验证，建议保留源码仓库用于问题复现
 
 ## 使用说明

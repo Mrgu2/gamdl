@@ -13,6 +13,7 @@ from gamdl.app import (
     WrapperManager,
     configure_app_logging,
 )
+from gamdl.app.downloads import WRAPPER_REQUIRED_CODECS
 from gamdl.interface import SongCodec
 from gamdl.web_gui import DEFAULT_HOST, DEFAULT_PORT, create_server
 
@@ -89,7 +90,9 @@ def main() -> None:
     settings = settings_store.load()
     configure_app_logging(paths, log_store, settings.log_level)
 
-    if settings.use_wrapper and settings.song_codec == SongCodec.ALAC.value:
+    if settings.use_wrapper and settings.song_codec in {
+        codec.value for codec in WRAPPER_REQUIRED_CODECS
+    }:
         try:
             resolved_ip = WrapperManager().ensure_running(settings.wrapper_decrypt_ip)
             if resolved_ip != settings.wrapper_decrypt_ip:

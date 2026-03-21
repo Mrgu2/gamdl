@@ -10,6 +10,7 @@ import socketserver
 import subprocess
 import tempfile
 import threading
+from urllib.parse import urlencode
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -89,6 +90,29 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Additional crop offset on X axis in CSS pixels.",
     )
+    parser.add_argument(
+        "--crop-mode",
+        choices=("center", "top-left", "auto"),
+        default="center",
+        help="Crop relative to the centered poster box or the top-left viewport origin.",
+    )
+    parser.add_argument(
+        "--render-query",
+        default="",
+        help="Optional query string appended to the poster URL, e.g. render=1.",
+    )
+    parser.add_argument(
+        "--virtual-time-budget-ms",
+        type=int,
+        default=1800,
+        help="Virtual time budget passed to Chrome before the screenshot is taken.",
+    )
+    parser.add_argument(
+        "--background-threshold",
+        type=int,
+        default=190,
+        help="Brightness threshold used by auto crop to separate the poster from Chrome's light filler background.",
+    )
     return parser.parse_args()
 
 
@@ -141,6 +165,7 @@ def capture_screenshot(
     viewport_width: int,
     viewport_height: int,
     render_scale: int,
+    virtual_time_budget_ms: int,
 ) -> None:
     command = [
         chrome_path,
@@ -151,8 +176,10 @@ def capture_screenshot(
         f"--force-device-scale-factor={render_scale}",
         f"--window-size={viewport_width},{viewport_height}",
         f"--screenshot={screenshot_path}",
-        url,
     ]
+    if virtual_time_budget_ms > 0:
+        command.append(f"--virtual-time-budget={virtual_time_budget_ms}")
+    command.append(url)
     subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
@@ -182,6 +209,76 @@ def normalize_edge_pixels(image: Image.Image) -> Image.Image:
     return result
 
 
+def build_render_url(port: int, relative_html: str, render_query: str) -> str:
+    url = f"http://127.0.0.1:{port}/{relative_html}"
+    if render_query:
+        url = f"{url}?{render_query}"
+    return url
+
+
+def find_auto_crop_origin(image: Image.Image, threshold: int) -> tuple[int, int]:
+    width, height = image.size
+    pixels = image.convert("RGBA").load()
+
+    left = next(
+        (
+            x
+            for x in range(width)
+            if (
+                sum(
+                    min(*pixels[x, y][:3]) if pixels[x, y][3] > 0 else 255
+                    for y in range(height)
+                )
+                / height
+            )
+            < threshold
+        ),
+        None,
+    )
+    top = next(
+        (
+            y
+            for y in range(height)
+            if (
+                sum(
+                    min(*pixels[x, y][:3]) if pixels[x, y][3] > 0 else 255
+                    for x in range(width)
+                )
+                / width
+            )
+            < threshold
+        ),
+        None,
+    )
+    if left is None or top is None:
+        raise ValueError("Auto crop failed to detect poster bounds")
+    return left, top
+
+
+def compute_crop_box(
+    args: argparse.Namespace,
+    render_scale: int,
+    viewport: Image.Image | None = None,
+) -> tuple[int, int, int, int]:
+    if args.crop_mode == "top-left":
+        crop_left = max(args.crop_left_adjust, 0) * render_scale
+        crop_top = max(args.crop_top_adjust, 0) * render_scale
+    elif args.crop_mode == "auto":
+        if viewport is None:
+            raise ValueError("Auto crop requires a viewport image")
+        crop_left, crop_top = find_auto_crop_origin(viewport, args.background_threshold)
+    else:
+        crop_left = (
+            ((args.viewport_width - args.poster_width) // 2) + args.crop_left_adjust
+        ) * render_scale
+        crop_top = (
+            ((args.viewport_height - args.poster_height) // 2) + args.crop_top_adjust
+        ) * render_scale
+    crop_right = crop_left + args.poster_width * render_scale
+    crop_bottom = crop_top + args.poster_height * render_scale
+    return crop_left, crop_top, crop_right, crop_bottom
+
+
 def main() -> int:
     args = parse_args()
     html_path = args.html.resolve()
@@ -198,20 +295,11 @@ def main() -> int:
 
     chrome_path = find_chrome(args.chrome_path)
     relative_html = html_path.relative_to(ROOT).as_posix()
-    crop_left = (
-        ((args.viewport_width - args.poster_width) // 2) + args.crop_left_adjust
-    ) * render_scale
-    crop_top = (
-        ((args.viewport_height - args.poster_height) // 2) + args.crop_top_adjust
-    ) * render_scale
-    crop_right = crop_left + args.poster_width * render_scale
-    crop_bottom = crop_top + args.poster_height * render_scale
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with serve_directory(ROOT) as port, tempfile.TemporaryDirectory() as temp_dir:
         screenshot_path = Path(temp_dir) / "poster-viewport.png"
-        url = f"http://127.0.0.1:{port}/{relative_html}"
+        url = build_render_url(port, relative_html, args.render_query)
         capture_screenshot(
             chrome_path=chrome_path,
             url=url,
@@ -219,8 +307,10 @@ def main() -> int:
             viewport_width=args.viewport_width,
             viewport_height=args.viewport_height,
             render_scale=render_scale,
+            virtual_time_budget_ms=args.virtual_time_budget_ms,
         )
         viewport = Image.open(screenshot_path).convert("RGBA")
+        crop_left, crop_top, crop_right, crop_bottom = compute_crop_box(args, render_scale, viewport)
         cropped = viewport.crop((crop_left, crop_top, crop_right, crop_bottom))
         cropped = apply_rounded_alpha(cropped, args.radius * render_scale)
 

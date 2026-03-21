@@ -1,6 +1,6 @@
 [project]
 name = "gamdl"
-version = "1.0.2"
+version = "1.0.3"
 description = "A desktop-focused Apple Music downloader fork with macOS and Windows builds."
 readme = "README.md"
 license = "MIT"
@@ -36,3 +36,10 @@ Repository = "https://github.com/Mrgu2/gu_music_downloader"
 gamdl = "gamdl.cli.cli:main"
 gamdl-desktop = "gamdl.desktop_app:main"
 gamdl-windows = "gamdl.windows_app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["gamdl*"]

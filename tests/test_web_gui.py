@@ -187,7 +187,7 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("https://docs.docker.com/desktop/setup/install/mac-install/", INDEX_HTML)
         self.assertIn("docker build -t wrapper-local .", INDEX_HTML)
         self.assertIn("wrapper-latest-10022", INDEX_HTML)
-        self.assertIn("免费 开源 纯净", INDEX_HTML)
+        self.assertNotIn("免费 开源 纯净", INDEX_HTML)
         self.assertIn("brand-head", INDEX_HTML)
         self.assertIn("brand-mark", INDEX_HTML)
         self.assertIn('linearGradient id="brand-bg"', INDEX_HTML)

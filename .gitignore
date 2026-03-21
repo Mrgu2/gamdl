@@ -6,6 +6,7 @@ __pycache__
 !.python-version
 !pyproject.toml
 !README.md
+!CHANGELOG.md
 !uv.lock
 !.github/
 !.github/workflows/

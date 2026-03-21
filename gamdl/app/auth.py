@@ -61,12 +61,19 @@ class TokenStore:
             return None
         return keyring
 
+    def _log_keyring_error(self, action: str, exc: Exception) -> None:
+        logger.warning("Keyring %s failed, falling back to token file: %s", action, exc)
+
     def get(self) -> str | None:
         keyring = self._keyring()
         if keyring:
-            token = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
-            if token:
-                return token
+            try:
+                token = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+            except Exception as exc:
+                self._log_keyring_error("read", exc)
+            else:
+                if token:
+                    return token
         if self.paths.token_fallback_path.exists():
             return self.paths.token_fallback_path.read_text(encoding="utf-8").strip()
         return None
@@ -74,7 +81,10 @@ class TokenStore:
     def set(self, token: str) -> None:
         keyring = self._keyring()
         if keyring:
-            keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
+            try:
+                keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
+            except Exception as exc:
+                self._log_keyring_error("write", exc)
         self.paths.ensure()
         self.paths.token_fallback_path.write_text(token, encoding="utf-8")
 
@@ -83,8 +93,8 @@ class TokenStore:
         if keyring:
             try:
                 keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_keyring_error("delete", exc)
         self.paths.token_fallback_path.unlink(missing_ok=True)
 
 
@@ -146,6 +156,32 @@ class AuthManager:
         self.token_store.set(token)
         self._save_session(payload)
         return SessionStatus(**payload)
+
+    @staticmethod
+    def _coerce_browser(value: object) -> BrowserType | None:
+        if isinstance(value, BrowserType):
+            return value
+        if not isinstance(value, str):
+            return None
+        try:
+            return BrowserType(value)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _coerce_login_method(
+        cls,
+        value: object,
+        browser: BrowserType | None,
+    ) -> LoginMethod:
+        if isinstance(value, LoginMethod):
+            return value
+        if isinstance(value, str):
+            try:
+                return LoginMethod(value)
+            except ValueError:
+                pass
+        return LoginMethod.BROWSER_IMPORT if browser else LoginMethod.WEBVIEW
 
     def _extract_token_from_cookie_jar(self, cookie_jar: Iterable) -> str:
         for cookie in cookie_jar:
@@ -250,11 +286,12 @@ class AuthManager:
             logger.warning("Stored session verification failed: %s", exc)
             return SessionStatus(**payload)
 
+        browser = self._coerce_browser(saved.get("browser"))
         return self._store_verified_session(
             token=token,
             verified=verified,
-            login_method=LoginMethod(saved.get("login_method", LoginMethod.WEBVIEW)),
-            browser=BrowserType(saved["browser"]) if saved.get("browser") else None,
+            login_method=self._coerce_login_method(saved.get("login_method"), browser),
+            browser=browser,
         )
 
     def get_media_user_token(self) -> str:

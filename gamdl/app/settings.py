@@ -7,6 +7,7 @@ from typing import Any
 import uuid
 
 from .paths import AppPaths
+from .wrapper_manager import default_wrapper_decrypt_ip, normalize_wrapper_decrypt_ip
 
 ALLOWED_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 ALLOWED_SONG_CODECS = {"aac-legacy", "aac", "alac", "atmos"}
@@ -28,6 +29,10 @@ STRING_KEYS = {
 }
 CLEARABLE_STRING_KEYS = {"open_file_application"}
 ALLOWED_THEMES = {"warm", "cool"}
+DEFAULT_WRAPPER_DECRYPT_IP = default_wrapper_decrypt_ip()
+WRAPPER_DECRYPT_IP_ERROR = (
+    "Wrapper 解密地址格式无效，请使用类似 127.0.0.1:10022 的地址，或仅填写端口号。"
+)
 
 
 @dataclass
@@ -43,7 +48,7 @@ class AppSettings:
     song_codec: str = "aac-legacy"
     theme: str = "warm"
     use_wrapper: bool = False
-    wrapper_decrypt_ip: str = "127.0.0.1:10022"
+    wrapper_decrypt_ip: str = DEFAULT_WRAPPER_DECRYPT_IP
 
 
 class AppSettingsStore:
@@ -55,9 +60,10 @@ class AppSettingsStore:
         return AppSettings(output_path=str(self.paths.default_output_path))
 
     def validate_output_path(self, output_path: str) -> str:
-        candidate = Path(output_path).expanduser()
-        if not str(candidate).strip():
+        if not output_path.strip():
             raise ValueError("请先选择下载目录。")
+
+        candidate = Path(output_path).expanduser()
 
         if candidate.exists() and not candidate.is_dir():
             raise ValueError("下载目录不是文件夹，请重新选择。")
@@ -96,6 +102,13 @@ class AppSettingsStore:
             sanitized.pop("song_codec")
         if "theme" in sanitized and sanitized["theme"] not in ALLOWED_THEMES:
             sanitized.pop("theme")
+        if "wrapper_decrypt_ip" in sanitized:
+            try:
+                sanitized["wrapper_decrypt_ip"] = normalize_wrapper_decrypt_ip(
+                    sanitized["wrapper_decrypt_ip"]
+                )
+            except ValueError:
+                sanitized.pop("wrapper_decrypt_ip")
         return sanitized
 
     def load(self) -> AppSettings:
@@ -114,6 +127,14 @@ class AppSettingsStore:
         return AppSettings(**payload)
 
     def save(self, payload: dict[str, Any]) -> AppSettings:
+        if isinstance(payload.get("wrapper_decrypt_ip"), str):
+            wrapper_decrypt_ip = payload["wrapper_decrypt_ip"].strip()
+            if wrapper_decrypt_ip:
+                try:
+                    normalize_wrapper_decrypt_ip(wrapper_decrypt_ip)
+                except ValueError as exc:
+                    raise ValueError(WRAPPER_DECRYPT_IP_ERROR) from exc
+
         settings = asdict(self.load())
         settings.update(self._sanitize(payload))
         settings["output_path"] = self.validate_output_path(settings["output_path"])

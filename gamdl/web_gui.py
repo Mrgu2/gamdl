@@ -886,70 +886,87 @@ INDEX_HTML = """<!doctype html>
       border-bottom: 1px solid var(--line);
     }
     .brand-head {
-      display: flex;
-      align-items: flex-start;
+      display: grid;
+      grid-template-columns: 1fr;
       gap: 14px;
     }
     .brand-mark {
-      width: 58px;
-      height: 58px;
-      flex: 0 0 58px;
-      border-radius: 16px;
-      box-shadow: 0 12px 24px rgba(93, 1, 41, .16);
+      width: 64px;
+      height: 64px;
+      flex: 0 0 64px;
+      border-radius: 18px;
+      box-shadow: 0 14px 28px rgba(93, 1, 41, .16);
       overflow: hidden;
     }
     .brand-copy {
       min-width: 0;
-    }
-    .brand-kicker {
-      font-size: 12px;
-      color: var(--muted);
-      letter-spacing: .12em;
-      text-transform: uppercase;
+      display: grid;
+      gap: 8px;
     }
     .brand h1 {
-      margin: 10px 0 0;
-      font-size: 30px;
-      letter-spacing: -.04em;
+      margin: 0;
+      max-width: 10ch;
+      font-size: 26px;
+      line-height: 1.02;
+      letter-spacing: -.045em;
+      text-wrap: balance;
     }
     .brand p {
-      margin: 8px 0 0;
+      margin: 12px 0 0;
       color: var(--muted);
-      line-height: 1.55;
-      font-size: 14px;
+      line-height: 1.6;
+      font-size: 13px;
+      max-width: 24ch;
     }
     .nav {
       display: grid;
-      gap: 6px;
+      gap: 4px;
     }
     .nav-btn {
+      position: relative;
       border: 1px solid transparent;
       background: transparent;
       color: var(--ink);
-      padding: 13px 16px;
+      padding: 12px 14px 12px 20px;
       border-radius: 14px;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 590;
       text-align: left;
       cursor: pointer;
       transition: .18s ease;
+    }
+    .nav-btn::before {
+      content: "";
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      width: 4px;
+      height: 18px;
+      border-radius: 999px;
+      background: transparent;
+      transform: translateY(-50%) scaleY(.36);
+      transition: transform .18s ease, background .18s ease;
     }
     .nav-btn:hover:not(.active) {
       background: var(--accent-soft);
       border-color: var(--line);
     }
     .nav-btn.active {
-      background: #0a84ff;
-      border-color: #0a84ff;
-      color: #fff;
-      box-shadow: 0 8px 18px rgba(10, 132, 255, .16);
+      background: rgba(255,255,255,.84);
+      border-color: var(--line);
+      color: var(--ink);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, .06);
+    }
+    .nav-btn.active::before {
+      background: var(--accent);
+      transform: translateY(-50%) scaleY(1);
     }
     .sidebar-foot {
       margin-top: auto;
-      padding: 16px 14px;
+      padding: 14px 14px 6px;
       border-top: 1px solid var(--line);
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
       line-height: 1.55;
     }
     .main-panel {
@@ -966,8 +983,8 @@ INDEX_HTML = """<!doctype html>
     }
     .topbar h2 {
       margin: 0;
-      font-size: 34px;
-      letter-spacing: -.04em;
+      font-size: 30px;
+      letter-spacing: -.05em;
     }
     .status-chip {
       display: inline-flex;
@@ -1609,24 +1626,27 @@ INDEX_HTML = """<!doctype html>
       border-bottom: 1px solid rgba(214, 205, 195, .58);
     }
     .brand h1 {
-      font-size: 31px;
-      line-height: .98;
+      font-size: 28px;
+      line-height: 1.02;
     }
     .brand p,
     .sidebar-foot {
       color: #74685f;
     }
     .nav {
-      gap: 8px;
+      gap: 5px;
     }
     .nav-btn {
-      border-radius: 16px;
+      border-radius: 15px;
       font-weight: 600;
     }
     .nav-btn.active {
-      background: linear-gradient(135deg, #ff496a 0%, #d21b52 100%);
-      border-color: transparent;
-      box-shadow: 0 16px 28px rgba(210, 27, 82, .22);
+      background: rgba(255,255,255,.72);
+      border-color: rgba(225, 212, 206, .88);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.86), 0 10px 20px rgba(94, 62, 53, .08);
+    }
+    .nav-btn.active::before {
+      background: linear-gradient(180deg, #ff496a 0%, #d21b52 100%);
     }
     .main-panel {
       min-height: calc(100vh - 40px);
@@ -1644,8 +1664,8 @@ INDEX_HTML = """<!doctype html>
       gap: 6px;
     }
     .topbar h2 {
-      font-size: 40px;
-      line-height: .94;
+      font-size: 34px;
+      line-height: .96;
     }
     .status-chip {
       background: rgba(255,255,255,.72);
@@ -1713,7 +1733,7 @@ INDEX_HTML = """<!doctype html>
     }
     .section-heading h3 {
       margin: 6px 0 0;
-      font-size: 24px;
+      font-size: 21px;
       letter-spacing: -.04em;
     }
     .section-body {
@@ -1891,9 +1911,20 @@ INDEX_HTML = """<!doctype html>
     }
     body[data-theme="cool"] .nav-btn.active,
     body[data-theme="cool"] .btn.primary {
-      background: linear-gradient(135deg, #0a84ff 0%, #2879ff 100%);
       border-color: #0a84ff;
       box-shadow: 0 10px 18px rgba(10, 132, 255, .18);
+    }
+    body[data-theme="cool"] .nav-btn.active {
+      background: rgba(255,255,255,.9);
+      border-color: #dbe2ea;
+      color: #111827;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, .06);
+    }
+    body[data-theme="cool"] .nav-btn.active::before {
+      background: linear-gradient(180deg, #0a84ff 0%, #2879ff 100%);
+    }
+    body[data-theme="cool"] .btn.primary {
+      background: linear-gradient(135deg, #0a84ff 0%, #2879ff 100%);
     }
     body[data-theme="cool"] .nav-btn:hover:not(.active) {
       background: rgba(10, 132, 255, .06);
@@ -2113,7 +2144,6 @@ INDEX_HTML = """<!doctype html>
             </svg>
           </div>
           <div class="brand-copy">
-            <div class="brand-kicker">免费 开源 纯净</div>
             <h1>Apple Music Downloader</h1>
           </div>
         </div>

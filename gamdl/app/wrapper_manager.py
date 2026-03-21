@@ -11,6 +11,8 @@ from typing import Literal
 logger = logging.getLogger("gamdl.app.wrapper")
 
 WRAPPER_NAME_RE = re.compile(r"^wrapper-latest-(\d+)$")
+DEFAULT_WRAPPER_HOST = "127.0.0.1"
+DEFAULT_WRAPPER_PORT = 10022
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,35 @@ class WrapperStatus:
     mode: Literal["none", "docker", "external-wrapper"]
     resolved_ip: str | None = None
     message: str | None = None
+
+
+def default_wrapper_decrypt_ip() -> str:
+    return f"{DEFAULT_WRAPPER_HOST}:{DEFAULT_WRAPPER_PORT}"
+
+
+def parse_wrapper_decrypt_ip(wrapper_decrypt_ip: str) -> tuple[str, int]:
+    candidate = wrapper_decrypt_ip.strip()
+    host, _sep, port = candidate.rpartition(":")
+    if not host:
+        host = DEFAULT_WRAPPER_HOST
+    else:
+        host = host.strip() or DEFAULT_WRAPPER_HOST
+
+    if any(character.isspace() for character in host):
+        raise ValueError("Wrapper host contains whitespace.")
+
+    try:
+        parsed_port = int(port or str(DEFAULT_WRAPPER_PORT))
+    except ValueError as exc:
+        raise ValueError("Wrapper decrypt port must be an integer.") from exc
+    if not 1 <= parsed_port <= 65535:
+        raise ValueError("Wrapper decrypt port must be between 1 and 65535.")
+    return host, parsed_port
+
+
+def normalize_wrapper_decrypt_ip(wrapper_decrypt_ip: str) -> str:
+    host, port = parse_wrapper_decrypt_ip(wrapper_decrypt_ip)
+    return f"{host}:{port}"
 
 
 def prioritize_wrapper_candidates(
@@ -55,16 +86,16 @@ class WrapperManager:
 
     @staticmethod
     def _parse_host_port(wrapper_decrypt_ip: str) -> tuple[str, int]:
-        host, _sep, port = wrapper_decrypt_ip.rpartition(":")
-        if not host:
-            host = "127.0.0.1"
-        return host, int(port or "10022")
+        return parse_wrapper_decrypt_ip(wrapper_decrypt_ip)
 
     @staticmethod
     def _is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.settimeout(timeout)
-            return probe.connect_ex((host, port)) == 0
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(timeout)
+                return probe.connect_ex((host, port)) == 0
+        except OSError:
+            return False
 
     def _ports_ready(self, host: str, decrypt_port: int) -> bool:
         return self._is_port_open(host, decrypt_port) and self._is_port_open(
