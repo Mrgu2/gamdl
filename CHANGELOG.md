@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 - 2026-03-23
+
+- 设置页新增“启动 wrapper”按钮，允许在 App 内直接尝试拉起 `wrapper-latest-10022`
+- 新增 `/api/wrapper/start`，复用现有 wrapper 探测与启动逻辑，而不是只暴露配置项
+- 打包后的 macOS App 现在会优先探测 `/opt/homebrew/bin/docker`、`/usr/local/bin/docker` 等常见 Docker CLI 路径
+- 补充设置页与 wrapper manager 回归测试，覆盖启动按钮与 Docker 路径解析
+
 ## 1.0.3 - 2026-03-22
 
 - 收敛最近一轮 Codex 工作流里已经补齐测试的稳定性修正

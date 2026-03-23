@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from gamdl.app.wrapper_manager import WrapperManager, prioritize_wrapper_candidates
 
@@ -35,6 +37,18 @@ class WrapperManagerTests(unittest.TestCase):
         self.assertFalse(status.available)
         self.assertEqual(status.mode, "none")
         self.assertIn("默认使用 AAC", status.message)
+
+    def test_wrapper_manager_prefers_absolute_docker_path_for_packaged_app(self):
+        with patch(
+            "gamdl.app.wrapper_manager.resolve_executable",
+            side_effect=[
+                SimpleNamespace(available=False, path=None),
+                SimpleNamespace(available=True, path="/opt/homebrew/bin/docker"),
+            ],
+        ):
+            manager = WrapperManager()
+
+        self.assertEqual(manager.docker_bin, "/opt/homebrew/bin/docker")
 
 
 if __name__ == "__main__":

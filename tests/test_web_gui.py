@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus, resolve_executable
@@ -216,6 +217,10 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn('id="select-convert-input-folder-btn"', INDEX_HTML)
         self.assertIn('id="select-convert-output-btn"', INDEX_HTML)
         self.assertIn('id="theme-select"', INDEX_HTML)
+        self.assertIn('id="start-wrapper-btn"', INDEX_HTML)
+        self.assertIn('id="wrapper-action-copy"', INDEX_HTML)
+        self.assertIn("function startWrapper()", INDEX_HTML)
+        self.assertIn("/api/wrapper/start", INDEX_HTML)
         self.assertIn("使用 ffmpeg 转换本地文件。", INDEX_HTML)
         self.assertIn("if (shouldPreserveOpenMenu && state.openWithMenuJobId)", INDEX_HTML)
         self.assertIn("refreshJobs({ preserveOpenMenu: true })", INDEX_HTML)
@@ -496,6 +501,35 @@ class WebGuiApiTests(unittest.TestCase):
 
         self.assertTrue(data["selected"])
         self.assertEqual(data["input_path"], str(selected.resolve()))
+
+    def test_start_wrapper_uses_wrapper_manager_and_returns_status(self):
+        with (
+            patch.object(
+                self.server.wrapper_manager,
+                "ensure_running",
+                return_value="127.0.0.1:10022",
+            ) as ensure_running,
+            patch.object(
+                self.server.wrapper_manager,
+                "probe_status",
+                return_value=SimpleNamespace(
+                    available=True,
+                    mode="docker",
+                    resolved_ip="127.0.0.1:10022",
+                    message="已检测到通过 Docker 运行的外部 wrapper。",
+                ),
+            ) as probe_status,
+        ):
+            data = self._post_json(
+                "/api/wrapper/start",
+                {"wrapper_decrypt_ip": "127.0.0.1:10022"},
+            )
+
+        ensure_running.assert_called_once_with("127.0.0.1:10022")
+        probe_status.assert_called_once_with("127.0.0.1:10022")
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["resolved_ip"], "127.0.0.1:10022")
+        self.assertTrue(data["wrapper_status"]["available"])
 
     def test_about_reports_distribution_audio_policy(self):
         data = self._get_json("/api/about")

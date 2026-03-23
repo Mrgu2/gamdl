@@ -6,7 +6,10 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
+
+from .executables import resolve_executable
 
 logger = logging.getLogger("gamdl.app.wrapper")
 
@@ -81,8 +84,29 @@ def prioritize_wrapper_candidates(
 
 class WrapperManager:
     def __init__(self, docker_bin: str = "docker", wait_timeout: float = 8.0) -> None:
-        self.docker_bin = docker_bin
+        self.docker_bin = self._resolve_docker_bin(docker_bin)
         self.wait_timeout = wait_timeout
+
+    @staticmethod
+    def _resolve_docker_bin(docker_bin: str) -> str:
+        common_candidates = [docker_bin]
+        if docker_bin == "docker":
+            common_candidates.extend(
+                [
+                    "/opt/homebrew/bin/docker",
+                    "/usr/local/bin/docker",
+                    "/Applications/Docker.app/Contents/Resources/bin/docker",
+                ]
+            )
+
+        for candidate in common_candidates:
+            if Path(candidate).is_absolute():
+                resolution = resolve_executable("docker", preferred_path=candidate)
+            else:
+                resolution = resolve_executable(candidate)
+            if resolution.available and resolution.path:
+                return resolution.path
+        return docker_bin
 
     @staticmethod
     def _parse_host_port(wrapper_decrypt_ip: str) -> tuple[str, int]:

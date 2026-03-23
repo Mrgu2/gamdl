@@ -450,6 +450,41 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"output_path": output_path})
             return
 
+        if parsed.path == "/api/wrapper/start":
+            requested_ip = payload.get(
+                "wrapper_decrypt_ip",
+                self.server.settings_store.load().wrapper_decrypt_ip,
+            )
+            try:
+                resolved_ip = self.server.wrapper_manager.ensure_running(requested_ip)
+                wrapper_status = self.server.wrapper_manager.probe_status(resolved_ip)
+            except ValueError as exc:
+                self._send_json(
+                    {"error": str(exc), "category": "filesystem"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            except RuntimeError as exc:
+                self._send_json(
+                    {
+                        "error": str(exc),
+                        "category": "wrapper",
+                        "wrapper_status": self.server.wrapper_manager.probe_status(
+                            requested_ip
+                        ).__dict__,
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "resolved_ip": resolved_ip,
+                    "wrapper_status": wrapper_status.__dict__,
+                }
+            )
+            return
+
         if parsed.path == "/api/desktop/select-folder":
             self._handle_output_folder_selection()
             return
@@ -1111,6 +1146,12 @@ INDEX_HTML = """<!doctype html>
     .path-picker .btn {
       flex: 0 0 auto;
       white-space: nowrap;
+    }
+    .inline-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
     }
     .btn {
       border: 1px solid var(--line-strong);
@@ -2481,6 +2522,13 @@ INDEX_HTML = """<!doctype html>
               <label for="wrapper-decrypt-ip">Wrapper 解密地址</label>
               <input id="wrapper-decrypt-ip" type="text" />
             </div>
+            <div class="field">
+              <label>Wrapper 控制</label>
+              <div class="inline-actions">
+                <button class="btn soft" id="start-wrapper-btn" type="button">启动 wrapper</button>
+                <span class="muted" id="wrapper-action-copy">如果已创建 wrapper-latest-10022 容器，可在这里手动拉起。</span>
+              </div>
+            </div>
             <div class="field" id="open-file-application-field">
               <label for="open-file-application">打开文件应用（可选）</label>
               <input id="open-file-application" type="text" placeholder="Windows 可填 exe 完整路径，例如 C:\\Program Files\\VLC\\vlc.exe" />
@@ -3089,15 +3137,33 @@ docker stop wrapper-latest-10022</pre>
     function renderWrapperStatus(wrapperStatus) {
       state.wrapperStatus = wrapperStatus;
       const copy = document.getElementById('wrapper-status-copy');
+      const actionCopy = document.getElementById('wrapper-action-copy');
+      const startButton = document.getElementById('start-wrapper-btn');
       if (!copy) return;
       if (!wrapperStatus) {
         copy.textContent = '高音质和杜比全景声需要外部 wrapper。';
+        if (actionCopy) {
+          actionCopy.textContent = '如果已创建 wrapper-latest-10022 容器，可在这里手动拉起。';
+        }
+        if (startButton) {
+          startButton.disabled = false;
+        }
         syncDownloadWorkspace();
         return;
       }
       copy.textContent = wrapperStatus.available
         ? (wrapperStatus.message || '高音质和杜比全景声需要外部 wrapper。')
         : '高音质和杜比全景声需要外部 wrapper。';
+      if (actionCopy) {
+        actionCopy.textContent = wrapperStatus.available
+          ? 'wrapper 已就绪；如需切换端口，请先修改地址再重新启动。'
+          : (wrapperStatus.mode === 'docker'
+            ? '已检测到 Docker 容器但未运行；点击按钮可直接拉起。'
+            : '当前未检测到可自动启动的 wrapper 容器。');
+      }
+      if (startButton) {
+        startButton.disabled = wrapperStatus.available;
+      }
       syncDownloadWorkspace();
     }
 
@@ -3512,6 +3578,17 @@ docker stop wrapper-latest-10022</pre>
       showToast('设置已保存');
     }
 
+    async function startWrapper() {
+      const requestedIp = document.getElementById('wrapper-decrypt-ip').value.trim() || DEFAULT_WRAPPER_DECRYPT_IP;
+      const data = await api('/api/wrapper/start', {
+        method: 'POST',
+        body: JSON.stringify({ wrapper_decrypt_ip: requestedIp }),
+      });
+      document.getElementById('wrapper-decrypt-ip').value = data.resolved_ip || requestedIp;
+      renderWrapperStatus(data.wrapper_status);
+      showToast(`wrapper 已启动：${data.resolved_ip || requestedIp}`);
+    }
+
     async function chooseOutputFolder(targetInputId, successMessage = '下载目录已确认') {
       const data = await api('/api/desktop/select-folder', {
         method: 'POST',
@@ -3653,6 +3730,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('submit-convert-btn').addEventListener('click', () => runAction(submitConvertJob));
       document.getElementById('refresh-jobs-btn').addEventListener('click', () => runAction(refreshJobs));
       document.getElementById('save-settings-btn').addEventListener('click', () => runAction(saveSettings));
+      document.getElementById('start-wrapper-btn').addEventListener('click', () => runAction(startWrapper));
       document.getElementById('select-output-btn').addEventListener('click', () => runAction(() => chooseOutputFolder('output-path', '下载目录已更新')));
       document.getElementById('select-convert-output-btn').addEventListener('click', () => runAction(() => chooseOutputFolder('convert-output-path', '转换输出目录已更新')));
       document.getElementById('select-convert-file-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-file', 'convert-input-path', '已选择输入文件')));
