@@ -1,6 +1,6 @@
 [project]
 name = "gamdl"
-version = "1.0.4"
+version = "1.0.5"
 description = "A desktop-focused Apple Music downloader fork with macOS and Windows builds."
 readme = "README.md"
 license = "MIT"

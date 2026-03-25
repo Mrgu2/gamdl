@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import time
 from threading import Event
 
@@ -11,9 +14,12 @@ def capture_media_user_token(language: str = "zh-CN", timeout: int = 300) -> dic
     try:
         from AppKit import (
             NSApplication,
+            NSApplicationActivateAllWindows,
+            NSApplicationActivateIgnoringOtherApps,
             NSApplicationActivationPolicyRegular,
             NSBackingStoreBuffered,
             NSMakeRect,
+            NSRunningApplication,
             NSWindow,
             NSWindowStyleMaskClosable,
             NSWindowStyleMaskMiniaturizable,
@@ -34,6 +40,18 @@ def capture_media_user_token(language: str = "zh-CN", timeout: int = 300) -> dic
             self.error = None
             self.finished = Event()
             self.closed = False
+
+        def activate_window(self) -> None:
+            self.window.orderFrontRegardless()
+            self.window.makeKeyAndOrderFront_(None)
+            self.window.makeMainWindow()
+            app = NSApplication.sharedApplication()
+            app.unhide_(None)
+            app.activateIgnoringOtherApps_(True)
+            current_app = NSRunningApplication.currentApplication()
+            current_app.activateWithOptions_(
+                NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows
+            )
 
         def build_window(self) -> None:
             app = NSApplication.sharedApplication()
@@ -62,8 +80,9 @@ def capture_media_user_token(language: str = "zh-CN", timeout: int = 300) -> dic
             request = NSURLRequest.requestWithURL_(request_url)
             self.webview.loadRequest_(request)
             self.window.center()
-            self.window.makeKeyAndOrderFront_(None)
-            app.activateIgnoringOtherApps_(True)
+            self.activate_window()
+            AppHelper.callLater(0.2, self.activate_window)
+            AppHelper.callLater(1.0, self.activate_window)
             AppHelper.callLater(1.0, self.poll_cookie_store)
             AppHelper.callLater(float(timeout), self.finish)
 
@@ -101,12 +120,98 @@ def capture_media_user_token(language: str = "zh-CN", timeout: int = 300) -> dic
     return controller.result
 
 
+def build_login_helper_command(
+    language: str = "zh-CN",
+    timeout: int = 300,
+    output_path: Path | None = None,
+) -> list[str]:
+    if getattr(sys, "frozen", False):
+        app_bundle = Path(sys.executable).resolve().parents[2]
+        helper_app = app_bundle / "Contents" / "Helpers" / "Apple Music Login Helper.app"
+        command = ["open", "-n", "-W", "-a", str(helper_app), "--args"]
+    else:
+        command = [sys.executable, "-m", "gamdl.macos_login_helper"]
+    command.extend(["--language", language, "--timeout", str(timeout)])
+    if output_path is not None:
+        command.extend(["--output", str(output_path)])
+    return command
+
+
+def _helper_error_message(stderr: str, stdout: str) -> str:
+    for candidate in (stderr, stdout):
+        lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+        if not lines:
+            continue
+        message = lines[-1]
+        if ": " in message:
+            label, detail = message.split(": ", 1)
+            if label.endswith(("Error", "Exception")) and detail:
+                return detail
+        return message
+    return "内置登录进程异常退出。"
+
+
+def capture_media_user_token_isolated(
+    language: str = "zh-CN",
+    timeout: int = 300,
+) -> dict[str, float | str]:
+    with tempfile.NamedTemporaryFile(suffix="-macos-login.json", delete=False) as handle:
+        output_path = Path(handle.name)
+
+    try:
+        completed = subprocess.run(
+            build_login_helper_command(language=language, timeout=timeout, output_path=output_path),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        if not output_path.exists():
+            if completed.returncode != 0:
+                raise RuntimeError(_helper_error_message(completed.stderr, completed.stdout))
+            raise RuntimeError("内置登录进程未返回结果。")
+        raw_payload = output_path.read_text(encoding="utf-8").strip()
+        if not raw_payload:
+            if completed.returncode != 0:
+                raise RuntimeError(_helper_error_message(completed.stderr, completed.stdout))
+            raise RuntimeError("内置登录进程返回了空结果。")
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            if completed.returncode != 0:
+                raise RuntimeError(_helper_error_message(completed.stderr, completed.stdout)) from exc
+            raise RuntimeError("内置登录进程返回了无效结果。") from exc
+        if payload.get("error"):
+            raise RuntimeError(str(payload["error"]))
+        if "media_user_token" not in payload:
+            if completed.returncode != 0:
+                raise RuntimeError(_helper_error_message(completed.stderr, completed.stdout))
+            raise RuntimeError("内置登录结果缺少 media-user-token。")
+        return payload
+    finally:
+        output_path.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Capture Apple Music login from a macOS webview")
     parser.add_argument("--language", default="zh-CN")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--output")
     args = parser.parse_args()
-    print(json.dumps(capture_media_user_token(args.language, args.timeout), ensure_ascii=False))
+    try:
+        payload = capture_media_user_token(args.language, args.timeout)
+    except Exception as exc:
+        if args.output:
+            Path(args.output).write_text(
+                json.dumps({"error": str(exc)}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        raise
+    serialized = json.dumps(payload, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(serialized, encoding="utf-8")
+    else:
+        print(serialized)
 
 
 if __name__ == "__main__":

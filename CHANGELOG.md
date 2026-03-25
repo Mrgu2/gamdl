@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5 - 2026-03-25
+
+- macOS 登录主路径改为“浏览器辅助登录”，点击后会按所选浏览器打开 Apple Music 登录页并自动轮询导入会话
+- 下载页和首次设置页的登录入口现在会沿用你选择的 `Chrome / Edge / Brave / Firefox`
+- 收敛打包版内置登录窗不弹出、不抢前台的问题，不再继续依赖不稳定的嵌入式 WebKit 登录窗口
+- 更新桌面版运行时提示、README 和 release 文案，使其与当前实际登录链路保持一致
+- 补充 auth / web GUI / desktop runtime 相关回归测试，并重新构建 macOS `dmg`
+
 ## 1.0.4 - 2026-03-23
 
 - 设置页新增“启动 wrapper”按钮，允许在 App 内直接尝试拉起 `wrapper-latest-10022`

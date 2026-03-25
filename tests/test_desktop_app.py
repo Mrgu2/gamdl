@@ -3,10 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from subprocess import CompletedProcess
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from gamdl.app import DesktopFileActions
-from gamdl.desktop_app import _pick_available_port, _select_file, _select_folder, _select_input_folder
+from gamdl.desktop_app import _pick_available_port, _select_file, _select_folder, _select_input_folder, main
 
 
 class DesktopAppTests(unittest.TestCase):
@@ -55,6 +56,58 @@ class DesktopAppTests(unittest.TestCase):
             return_value=CompletedProcess(args=["osascript"], returncode=0, stdout="/tmp/input-folder\n", stderr=""),
         ):
             self.assertEqual(_select_input_folder(), "/tmp/input-folder")
+
+    def test_main_runs_macos_login_helper_mode_without_starting_ui(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            output_path = Path(tempdir) / "login.json"
+            args = SimpleNamespace(
+                macos_login_helper=True,
+                macos_login_helper_output=str(output_path),
+                language="en-US",
+                timeout=12,
+            )
+            with (
+                patch("gamdl.desktop_app.argparse.ArgumentParser.parse_args", return_value=args),
+                patch(
+                    "gamdl.desktop_app.capture_media_user_token",
+                    return_value={"media_user_token": "token-123", "captured_at": 1.25},
+                ) as helper_mock,
+                patch("gamdl.desktop_app.create_server", new=MagicMock()) as create_server_mock,
+                ):
+                main()
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                '{"media_user_token": "token-123", "captured_at": 1.25}',
+            )
+
+        helper_mock.assert_called_once_with(language="en-US", timeout=12)
+        create_server_mock.assert_not_called()
+
+    def test_main_writes_helper_error_payload_before_exiting(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            output_path = Path(tempdir) / "login-error.json"
+            args = SimpleNamespace(
+                macos_login_helper=True,
+                macos_login_helper_output=str(output_path),
+                language="zh-CN",
+                timeout=5,
+            )
+            with (
+                patch("gamdl.desktop_app.argparse.ArgumentParser.parse_args", return_value=args),
+                patch(
+                    "gamdl.desktop_app.capture_media_user_token",
+                    side_effect=RuntimeError("inner helper failed"),
+                ),
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    main()
+
+            self.assertEqual(exc.exception.code, 1)
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                '{"error": "inner helper failed"}',
+            )
 
     def test_file_actions_use_open_on_macos(self):
         file_actions = DesktopFileActions(current_platform="Darwin")

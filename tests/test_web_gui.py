@@ -45,12 +45,13 @@ class FakeAuthManager:
         )
         return self.session
 
-    def login_with_webview(self):
+    def login_with_webview(self, browser=None, language: str = "zh-CN"):
         self.session = SessionStatus(
             connected=True,
-            login_method="webview",
+            login_method="browser-import",
+            browser=getattr(browser, "value", None),
             storefront="us",
-            language="zh-CN",
+            language=language,
             active_subscription=True,
         )
         return self.session
@@ -422,6 +423,13 @@ class WebGuiApiTests(unittest.TestCase):
             data["runtime"]["file_actions_supported"],
             self.server.file_actions.supported,
         )
+
+    def test_login_webview_uses_selected_browser(self):
+        data = self._post_json("/api/auth/login-webview", {"browser": "chrome"})
+
+        self.assertTrue(data["session"]["connected"])
+        self.assertEqual(data["session"]["login_method"], "browser-import")
+        self.assertEqual(data["session"]["browser"], "chrome")
 
     def test_post_settings_persists_whitelisted_values(self):
         remembered_path = self.paths.app_support_dir / "remembered"

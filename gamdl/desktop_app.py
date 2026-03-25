@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 from contextlib import suppress
+import json
+from pathlib import Path
 import socket
 import subprocess
+import sys
 import threading
 
 from gamdl.app import (
@@ -15,6 +18,7 @@ from gamdl.app import (
 )
 from gamdl.app.downloads import WRAPPER_REQUIRED_CODECS
 from gamdl.interface import SongCodec
+from gamdl.macos_login_helper import capture_media_user_token
 from gamdl.web_gui import DEFAULT_HOST, DEFAULT_PORT, create_server
 
 
@@ -82,7 +86,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Apple Music Downloader desktop app")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", default=DEFAULT_PORT, type=int)
+    parser.add_argument("--macos-login-helper", action="store_true")
+    parser.add_argument("--macos-login-helper-output")
+    parser.add_argument("--language", default="zh-CN")
+    parser.add_argument("--timeout", default=300, type=int)
     args = parser.parse_args()
+
+    if getattr(args, "macos_login_helper", False):
+        output_path = getattr(args, "macos_login_helper_output", None)
+        try:
+            payload = capture_media_user_token(
+                language=getattr(args, "language", "zh-CN"),
+                timeout=getattr(args, "timeout", 300),
+            )
+        except Exception as exc:
+            serialized = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            if output_path:
+                Path(output_path).write_text(serialized, encoding="utf-8")
+            else:
+                print(serialized, file=sys.stderr)
+            raise SystemExit(1) from exc
+        serialized = json.dumps(payload, ensure_ascii=False)
+        if output_path:
+            Path(output_path).write_text(serialized, encoding="utf-8")
+        else:
+            print(serialized)
+        return
 
     paths = AppPaths()
     settings_store = AppSettingsStore(paths)

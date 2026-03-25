@@ -38,11 +38,11 @@ def detect_desktop_runtime(
 
     if native_login_supported:
         native_login_message = (
-            "内置登录是主路径。浏览器导入适合你已经在本机浏览器里登录过 Apple Music 的情况。"
+            "浏览器辅助登录是主路径。程序会拉起你选择的浏览器打开 Apple Music 登录页，并自动导入登录态。"
         )
     else:
         native_login_message = (
-            f"{current_platform} 版不支持内置登录，请使用浏览器导入。"
+            f"{current_platform} 版暂不支持一键拉起浏览器登录，请先在本机浏览器登录 Apple Music，再导入登录态。"
         )
 
     if folder_picker_supported:

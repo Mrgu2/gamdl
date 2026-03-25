@@ -563,8 +563,15 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/auth/login-webview":
+            browser_name = payload.get("browser", BrowserType.CHROME.value)
+            if browser_name not in SUPPORTED_BROWSER_IMPORTS:
+                self._send_json({"error": "Unsupported browser"}, HTTPStatus.BAD_REQUEST)
+                return
             try:
-                session = self.server.auth_manager.login_with_webview()
+                session = self.server.auth_manager.login_with_webview(
+                    browser=BrowserType(browser_name),
+                    language="zh-CN",
+                )
             except Exception as exc:
                 self._send_json(
                     {"error": str(exc), "category": _classify_error(exc)},
@@ -2091,7 +2098,7 @@ INDEX_HTML = """<!doctype html>
             </div>
             <div class="setup-point">
               <strong>账号登录</strong>
-              使用你自己的 Apple Music 账号登录。你可以选择内置登录，也可以导入浏览器登录状态。
+              使用你自己的 Apple Music 账号登录。你可以选择浏览器辅助登录，也可以导入已存在的浏览器登录状态。
             </div>
             <div class="setup-point">
               <strong>完成设置后开始下载</strong>
@@ -2139,7 +2146,7 @@ INDEX_HTML = """<!doctype html>
               <span class="badge" id="setup-login-badge">待登录</span>
             </div>
             <div class="inline">
-              <button class="btn primary" id="setup-login-webview-btn">内置登录</button>
+              <button class="btn primary" id="setup-login-webview-btn">浏览器辅助登录</button>
               <select id="setup-browser-select" style="max-width: 180px">
                 <option value="chrome">Chrome</option>
                 <option value="edge">Edge</option>
@@ -2264,7 +2271,7 @@ INDEX_HTML = """<!doctype html>
                   <div class="muted" id="account-detail">显示当前账号状态。</div>
                 </div>
                 <div class="inline">
-                  <button class="btn primary" id="login-webview-btn">内置登录</button>
+                  <button class="btn primary" id="login-webview-btn">浏览器辅助登录</button>
                   <select id="browser-select" style="max-width: 180px">
                     <option value="chrome">Chrome</option>
                     <option value="edge">Edge</option>
@@ -2351,7 +2358,7 @@ INDEX_HTML = """<!doctype html>
             <button class="btn danger" id="logout-btn">退出登录</button>
           </div>
           <div class="card-body grid">
-            <p class="lead" id="account-login-copy">支持内置登录和浏览器导入，登录状态保存在本机和 Keychain。</p>
+            <p class="lead" id="account-login-copy">支持浏览器辅助登录和浏览器导入，登录状态保存在本机和 Keychain。</p>
             <div class="list" id="account-status-list"></div>
           </div>
         </article>
@@ -2841,7 +2848,7 @@ docker stop wrapper-latest-10022</pre>
 
     function loginMethodLabel(session) {
       const method = String(session?.login_method || '').trim();
-      if (method === 'webview') return '内置登录';
+      if (method === 'webview') return '浏览器辅助登录';
       if (method === 'browser-import') return '浏览器导入';
       if (method === 'saved-session') return '本地会话';
       return method || '未知方式';
@@ -2927,7 +2934,7 @@ docker stop wrapper-latest-10022</pre>
         method.textContent = '未登录';
         method.className = 'badge';
         detail.textContent = state.runtime?.native_login_supported
-          ? '请先完成内置登录或浏览器导入。'
+          ? '请先完成浏览器辅助登录或浏览器导入。'
           : '请先在本机浏览器登录 Apple Music，再导入浏览器登录态。';
         accountList.innerHTML = '<div class="list-item"><div class="muted">当前没有可用会话。</div></div>';
         document.getElementById('setup-login-status').textContent = session?.last_error || '未检测到可用会话。';
@@ -2949,7 +2956,7 @@ docker stop wrapper-latest-10022</pre>
 
       const items = [
         ['登录方式', loginMethodLabel(session)],
-        ['浏览器来源', session.browser || (state.runtime?.native_login_supported ? '内置登录' : '浏览器导入')],
+        ['浏览器来源', session.browser || (state.runtime?.native_login_supported ? '浏览器辅助登录' : '浏览器导入')],
         ['Storefront', String(session.storefront || 'unknown').toUpperCase()],
         ['语言', session.language || 'zh-CN'],
         ['订阅状态', session.active_subscription ? '有效' : '无效'],
@@ -3184,7 +3191,7 @@ docker stop wrapper-latest-10022</pre>
         ? '登录 Apple Music 账号。'
         : runtime.native_login_message;
       document.getElementById('account-login-copy').textContent = runtime.native_login_supported
-        ? '支持内置登录和浏览器导入，登录状态保存在本机和 Keychain。'
+        ? '支持浏览器辅助登录和浏览器导入，登录状态保存在本机和 Keychain。'
         : runtime.native_login_message;
 
       const outputInputs = [
@@ -3291,7 +3298,7 @@ docker stop wrapper-latest-10022</pre>
         <div class="list-item"><div class="list-head"><strong>支持的链接类型</strong><span class="muted">${kinds}</span></div></div>
         <div class="list-item"><div class="list-head"><strong>默认音质</strong><span class="muted">${defaultCodec}</span></div></div>
         <div class="list-item"><div class="list-head"><strong>高音质模式</strong><span class="muted">${qualityMode}</span></div></div>
-        <div class="list-item"><div class="list-head"><strong>登录能力</strong><span class="muted">${runtime.native_login_supported ? '内置登录 + 浏览器导入' : '仅浏览器导入'}</span></div><div class="muted">${runtime.native_login_message || ''}</div></div>
+        <div class="list-item"><div class="list-head"><strong>登录能力</strong><span class="muted">${runtime.native_login_supported ? '浏览器辅助登录 + 浏览器导入' : '仅浏览器导入'}</span></div><div class="muted">${runtime.native_login_message || ''}</div></div>
         <div class="list-item"><div class="list-head"><strong>ALAC 规格</strong><span class="muted">最高支持 ${alacMaxSpec}</span></div><div class="muted">${alacSpecNote}</div></div>
         <div class="list-item"><div class="list-head"><strong>Wrapper 状态</strong><span class="muted">${data.wrapper_status?.message || 'unknown'}</span></div></div>
       `;
@@ -3661,12 +3668,13 @@ docker stop wrapper-latest-10022</pre>
     }
 
     async function loginWithWebview() {
+      const browser = document.getElementById('browser-select').value;
       const data = await api('/api/auth/login-webview', {
         method: 'POST',
-        body: '{}',
+        body: JSON.stringify({ browser }),
       });
       renderSession(data.session);
-      showToast('内置登录完成');
+      showToast(`已通过 ${browser} 完成浏览器辅助登录`);
     }
 
     async function importFromBrowser() {
@@ -3680,7 +3688,14 @@ docker stop wrapper-latest-10022</pre>
     }
 
     async function setupLoginWithWebview() {
-      await loginWithWebview();
+      const browser = document.getElementById('setup-browser-select').value;
+      const data = await api('/api/auth/login-webview', {
+        method: 'POST',
+        body: JSON.stringify({ browser }),
+      });
+      renderSession(data.session);
+      document.getElementById('browser-select').value = browser;
+      showToast(`已通过 ${browser} 完成浏览器辅助登录`);
     }
 
     async function setupImportFromBrowser() {

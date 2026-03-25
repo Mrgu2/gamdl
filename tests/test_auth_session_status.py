@@ -63,6 +63,31 @@ class AuthSessionStatusTests(unittest.TestCase):
         self.assertTrue(status.connected)
         self.assertEqual(status.login_method, LoginMethod.WEBVIEW.value)
 
+    def test_login_with_webview_uses_browser_assisted_flow(self):
+        with (
+            patch("gamdl.app.auth.platform.system", return_value="Darwin"),
+            patch.object(self.manager, "_open_apple_music_login_in_browser") as open_browser,
+            patch.object(
+                self.manager,
+                "_wait_for_browser_login",
+                return_value=SessionStatus(
+                    connected=True,
+                    login_method=LoginMethod.BROWSER_IMPORT.value,
+                    browser="chrome",
+                    storefront="us",
+                    language="zh-CN",
+                ),
+            ) as wait_login,
+        ):
+            status = self.manager.login_with_webview()
+
+        self.assertTrue(status.connected)
+        self.assertEqual(status.login_method, LoginMethod.BROWSER_IMPORT.value)
+        self.assertEqual(status.browser, "chrome")
+        self.assertEqual(status.storefront, "us")
+        open_browser.assert_called_once()
+        wait_login.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

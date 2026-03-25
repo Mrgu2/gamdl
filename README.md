@@ -1,8 +1,7 @@
-# Apple Music Downloader 1.0.4
+# Apple Music Downloader 1.0.5
 
-[![Release](https://img.shields.io/badge/release-1.0.4-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.0.5-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
-[![Windows Build](https://img.shields.io/github/actions/workflow/status/Mrgu2/gu_music_downloader/build-windows.yml?branch=codex%2Falac-download&label=windows%20build)](https://github.com/Mrgu2/gu_music_downloader/actions/workflows/build-windows.yml)
 
 <p align="center">
   <img src="assets/macos/app-icon-1024.png" alt="Apple Music Downloader app icon" width="180" />
@@ -14,7 +13,7 @@
 
 ## 项目定位
 
-`Apple Music Downloader 1.0.4` 的目标很明确：
+`Apple Music Downloader 1.0.5` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -27,33 +26,31 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.4 发布内容
+## 1.0.5 发布内容
 
-正式版 `1.0.4` 交付两套桌面客户端：
+正式版 `1.0.5` 这次只发布 macOS 桌面包：
 
 - `Apple.Music.Downloader.dmg`
   - 面向 macOS
   - 包含桌面应用和内置 `ffmpeg`
-- `Apple.Music.Downloader.Windows.zip`
-  - 面向 Windows
-  - 保持和之前 release 一致的分发形式
-  - 由 GitHub Actions 在 `windows-latest` 上构建
 
-源码仓库仍然保留 CLI 与开发环境，适合高级用户自行构建或二次修改。
+源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖 wrapper 启动体验的补全和 macOS 打包环境下的 Docker 检测修复：
+本次版本主要覆盖 macOS 登录链路稳定性修复，并继续沿用之前 release 的分发方式：
 
-- 设置页新增“启动 wrapper”按钮
-- 新增应用内 `wrapper` 启动接口，直接复用现有容器探测与启动逻辑
-- 修复打包后的 macOS App 因 PATH 缺失而找不到 Docker CLI 的问题
-- 补充设置页和 wrapper manager 相关回归测试
+- macOS 主登录路径改为浏览器辅助登录，会按你在界面里选择的浏览器拉起 Apple Music 登录页
+- 登录完成后会自动轮询并导入 `media-user-token`，不再依赖不稳定的嵌入式登录窗
+- 下载页与首次设置页统一支持 `Chrome / Edge / Brave / Firefox`
+- README、运行时提示与 release 说明统一更新到当前真实行为
+- 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
+- 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
 ## 主要功能
 
 ### 下载
 
 - 下载歌曲、专辑、歌单
-- 支持 App 内登录
+- 支持浏览器辅助登录
 - 支持导入浏览器登录态
 - 统一任务队列与日志页面
 - 默认 AAC 可直接使用
@@ -104,23 +101,19 @@ macOS 包说明：
 
 ### Windows
 
-1. 前往 [Releases](https://github.com/Mrgu2/gu_music_downloader/releases)
-2. 下载 `Apple.Music.Downloader.Windows.zip`
-3. 解压后运行 `Apple Music Downloader Windows.exe`
+当前 `1.0.5` release 不附带 Windows 安装包。
 
 Windows 包说明：
 
-- 继续沿用之前 release 的 zip 分发形式
-- 当前 release 的 Windows 包仍主要通过 GitHub Actions 生成
-- 尚未在真实 Windows 机器上进行测试
-- 如需重新构建或调试，推荐使用 Claude Code 或 Codex
-- 目前主要做过构建级验证，建议保留源码仓库用于问题复现
+- 如需使用，请在 Windows 环境自行修改并编译
+- 推荐直接使用 Claude Code 或 Codex 之类的 agent 协助处理 Windows 适配和打包
+- 目前主要做过源码与构建级验证，建议保留源码仓库用于问题复现
 
 ## 使用说明
 
 ### 下载页面
 
-1. 登录 Apple Music 账号，或导入浏览器登录态
+1. 先使用浏览器辅助登录，或导入已登录浏览器的登录态
 2. 粘贴一个或多个 Apple Music 链接
 3. 确认输出目录和下载设置
 4. 加入任务队列并在 `任务` 页面查看进度
@@ -154,22 +147,6 @@ dist/Apple Music Downloader.dmg
 ```
 
 ### Windows 构建
-
-推荐两种方式：
-
-1. 在 Windows 环境本地构建
-2. 推送到 GitHub 后使用仓库内置 workflow 自动构建
-
-现有 workflow：
-
-- [Build Windows Desktop App](https://github.com/Mrgu2/gu_music_downloader/actions/workflows/build-windows.yml)
-
-它会：
-
-- 安装依赖
-- 跑全量 `unittest`
-- 使用 `Apple Music Downloader Windows.spec` 打包
-- 上传 `apple-music-downloader-windows` artifact
 
 如果你是在 Windows 本地构建，可参考：
 

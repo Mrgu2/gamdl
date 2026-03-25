@@ -16,18 +16,18 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertFalse(runtime.native_login_supported)
         self.assertFalse(runtime.folder_picker_supported)
         self.assertTrue(runtime.file_actions_supported)
-        self.assertIn("不支持内置登录", runtime.native_login_message)
+        self.assertIn("暂不支持一键拉起浏览器登录", runtime.native_login_message)
         self.assertIn("不支持文件夹选择器", runtime.output_path_message)
 
     @patch("gamdl.desktop_runtime.platform.system", return_value="Darwin")
-    def test_macos_runtime_keeps_native_login_path(self, _mock_system):
+    def test_macos_runtime_uses_browser_assisted_login_path(self, _mock_system):
         runtime = detect_desktop_runtime(folder_picker_supported=True)
 
         self.assertEqual(runtime.platform, "Darwin")
         self.assertTrue(runtime.native_login_supported)
         self.assertTrue(runtime.folder_picker_supported)
         self.assertTrue(runtime.file_actions_supported)
-        self.assertIn("内置登录是主路径", runtime.native_login_message)
+        self.assertIn("浏览器辅助登录是主路径", runtime.native_login_message)
 
 
 class WindowsLauncherTests(unittest.TestCase):

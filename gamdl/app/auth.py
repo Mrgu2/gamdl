@@ -4,21 +4,23 @@ import asyncio
 import json
 import logging
 import platform
+import subprocess
 from dataclasses import asdict, dataclass
 from enum import Enum
 from http.cookiejar import CookieJar
 from pathlib import Path
+import time
 from typing import Iterable
 
 from ..api import AppleMusicApi
 from ..api.apple_music_api import _matches_apple_music_cookie_domain
-from ..macos_login_helper import capture_media_user_token
 from .paths import AppPaths
 
 logger = logging.getLogger("gamdl.app.auth")
 
 KEYRING_SERVICE = "gamdl.desktop"
 KEYRING_USERNAME = "media-user-token"
+APPLE_MUSIC_LOGIN_URL = "https://music.apple.com/login"
 
 
 class StringEnum(str, Enum):
@@ -30,6 +32,14 @@ class BrowserType(StringEnum):
     EDGE = "edge"
     BRAVE = "brave"
     FIREFOX = "firefox"
+
+
+BROWSER_APP_NAMES = {
+    BrowserType.CHROME: "Google Chrome",
+    BrowserType.EDGE: "Microsoft Edge",
+    BrowserType.BRAVE: "Brave Browser",
+    BrowserType.FIREFOX: "Firefox",
+}
 
 
 class LoginMethod(StringEnum):
@@ -228,21 +238,72 @@ class AuthManager:
         logger.info("Imported session from %s for storefront %s", browser.value, status.storefront)
         return status
 
-    def login_with_webview(self, language: str = "zh-CN") -> SessionStatus:
-        if platform.system() != "Darwin":
-            raise RuntimeError("当前平台暂不支持内置登录，请使用浏览器导入登录态。")
-        logger.info("Starting in-app Apple Music login flow")
-        self.paths.ensure()
-        payload = capture_media_user_token(language=language)
-        token = str(payload["media_user_token"])
-        verified = asyncio.run(self._verify_token(token, language=language))
-        status = self._store_verified_session(
-            token=token,
-            verified=verified,
-            login_method=LoginMethod.WEBVIEW,
-            browser=None,
+    def _open_apple_music_login_in_browser(self, browser: BrowserType) -> None:
+        app_name = BROWSER_APP_NAMES[browser]
+        logger.info("Opening Apple Music login in %s", app_name)
+        try:
+            subprocess.run(
+                ["open", "-a", app_name, APPLE_MUSIC_LOGIN_URL],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"无法打开 {app_name}。请确认浏览器已安装。") from exc
+
+    def _wait_for_browser_login(
+        self,
+        browser: BrowserType,
+        language: str = "zh-CN",
+        timeout: int = 180,
+        poll_interval: float = 1.0,
+    ) -> SessionStatus:
+        deadline = time.monotonic() + timeout
+        last_error: Exception | None = None
+
+        while time.monotonic() < deadline:
+            try:
+                cookie_jar = self._load_browser_cookies(browser)
+                token = self._extract_token_from_cookie_jar(cookie_jar)
+                verified = asyncio.run(self._verify_token(token, language=language))
+                status = self._store_verified_session(
+                    token=token,
+                    verified=verified,
+                    login_method=LoginMethod.BROWSER_IMPORT,
+                    browser=browser,
+                )
+                logger.info(
+                    "Browser-assisted login imported session from %s for storefront %s",
+                    browser.value,
+                    status.storefront,
+                )
+                return status
+            except Exception as exc:
+                last_error = exc
+                time.sleep(poll_interval)
+
+        browser_name = BROWSER_APP_NAMES[browser]
+        logger.warning(
+            "Timed out waiting for Apple Music login in %s after %s seconds",
+            browser.value,
+            timeout,
         )
-        logger.info("In-app login completed for storefront %s", status.storefront)
+        raise RuntimeError(
+            f"已在 {browser_name} 打开 Apple Music 登录页，但在 {timeout} 秒内未检测到可用登录态。"
+        ) from last_error
+
+    def login_with_webview(
+        self,
+        language: str = "zh-CN",
+        browser: BrowserType = BrowserType.CHROME,
+    ) -> SessionStatus:
+        if platform.system() != "Darwin":
+            raise RuntimeError("当前平台暂不支持浏览器辅助登录，请使用浏览器导入登录态。")
+        logger.info("Starting browser-assisted Apple Music login flow")
+        self.paths.ensure()
+        self._open_apple_music_login_in_browser(browser)
+        status = self._wait_for_browser_login(browser, language=language)
+        logger.info("Browser-assisted login completed for storefront %s", status.storefront)
         return status
 
     def get_session_status(

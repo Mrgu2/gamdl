@@ -60,7 +60,7 @@ class WindowsLauncher:
             frame,
             text=(
                 "Windows 版当前通过默认浏览器承载下载界面。\n"
-                "内置登录暂不提供，请先在本机浏览器登录 Apple Music，"
+                "浏览器辅助登录暂不提供，请先在本机浏览器登录 Apple Music，"
                 "再使用“导入浏览器登录态”。"
             ),
             justify="left",
