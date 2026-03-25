@@ -1,19 +1,19 @@
-# Apple Music Downloader 1.0.5
+# Gamdl Desktop Fork 1.0.5
 
 [![Release](https://img.shields.io/badge/release-1.0.5-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
-  <img src="assets/macos/app-icon-1024.png" alt="Apple Music Downloader app icon" width="180" />
+  <img src="assets/macos/app-icon-1024.png" alt="Desktop app icon" width="180" />
 </p>
 
-这是一个以桌面版为中心维护的 Apple Music 下载工具 fork，基于上游 [Gamdl](https://github.com/glomatico/gamdl) 改编，由 [@Mrgu2](https://github.com/Mrgu2) 持续维护。
+这是一个以桌面版为中心维护的下载工具 fork，基于上游 [Gamdl](https://github.com/glomatico/gamdl) 改编，由 [@Mrgu2](https://github.com/Mrgu2) 持续维护。
 
 软件纯免费开源，无病毒，无额外广告。请确保你是从 GitHub [@Mrgu2](https://github.com/Mrgu2/gu_music_downloader) 下载该软件，以保证来源可核验、没有后门风险。
 
 ## 项目定位
 
-`Apple Music Downloader 1.0.5` 的目标很明确：
+`Gamdl Desktop Fork 1.0.5` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -30,7 +30,7 @@
 
 正式版 `1.0.5` 这次只发布 macOS 桌面包：
 
-- `Apple.Music.Downloader.dmg`
+- `macOS dmg 安装包`
   - 面向 macOS
   - 包含桌面应用和内置 `ffmpeg`
 
@@ -38,7 +38,7 @@
 
 本次版本主要覆盖 macOS 登录链路稳定性修复，并继续沿用之前 release 的分发方式：
 
-- macOS 主登录路径改为浏览器辅助登录，会按你在界面里选择的浏览器拉起 Apple Music 登录页
+- macOS 主登录路径改为浏览器辅助登录，会按你在界面里选择的浏览器拉起登录页
 - 登录完成后会自动轮询并导入 `media-user-token`，不再依赖不稳定的嵌入式登录窗
 - 下载页与首次设置页统一支持 `Chrome / Edge / Brave / Firefox`
 - README、运行时提示与 release 说明统一更新到当前真实行为
@@ -89,8 +89,8 @@
 ### macOS
 
 1. 前往 [Releases](https://github.com/Mrgu2/gu_music_downloader/releases)
-2. 下载 `Apple.Music.Downloader.dmg`
-3. 将 `Apple Music Downloader.app` 拖到 `Applications`
+2. 下载当前 release 提供的 macOS dmg 安装包
+3. 将 app 拖到 `Applications`
 4. 首次打开如果被 Gatekeeper 阻止，在 `系统设置 > 隐私与安全性` 里点 `仍要打开`
 
 macOS 包说明：
@@ -114,7 +114,7 @@ Windows 包说明：
 ### 下载页面
 
 1. 先使用浏览器辅助登录，或导入已登录浏览器的登录态
-2. 粘贴一个或多个 Apple Music 链接
+2. 粘贴一个或多个支持的链接
 3. 确认输出目录和下载设置
 4. 加入任务队列并在 `任务` 页面查看进度
 
@@ -155,9 +155,9 @@ MACOS_ARCH=x86_64 bash scripts/build-macos-app.sh
 构建产物：
 
 ```text
-dist/Apple Music Downloader.app
-dist/Apple Music Downloader-arm64.dmg
-dist/Apple Music Downloader-x86_64.dmg
+dist/*.app
+dist/*-arm64.dmg
+dist/*-x86_64.dmg
 ```
 
 ### Windows 构建
@@ -167,7 +167,7 @@ dist/Apple Music Downloader-x86_64.dmg
 ```bash
 uv sync --extra desktop-build
 uv run python -m unittest discover -s tests
-uv run pyinstaller --noconfirm "Apple Music Downloader Windows.spec"
+uv run pyinstaller --noconfirm "<Windows spec 文件>"
 ```
 
 ## 开发与验证
@@ -205,11 +205,7 @@ gamdl --help
 
 ### macOS 桌面版
 
-```text
-~/Library/Application Support/Apple Music Downloader
-```
-
-这里会保存：
+这里会保存在 macOS `Application Support` 下的当前桌面版目录中：
 
 - 设置
 - 登录态
