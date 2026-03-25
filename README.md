@@ -96,7 +96,7 @@
 macOS 包说明：
 
 - 当前发布包内置 `ffmpeg`
-- 当前内置构建针对 Apple Silicon
+- 当前 release 附带的是 Apple Silicon 构建
 - 如需重新打包，请参考下方构建说明
 
 ### Windows
@@ -139,11 +139,25 @@ uv sync --extra desktop-build
 bash scripts/build-macos-app.sh
 ```
 
+如果你要构建 Intel mac 版本，至少要准备一份 `x86_64` 的 `ffmpeg`，然后显式指定目标架构：
+
+```bash
+cp /path/to/ffmpeg assets/macos/ffmpeg-x86_64
+MACOS_ARCH=x86_64 bash scripts/build-macos-app.sh
+```
+
+说明：
+
+- 脚本会为 `arm64` 和 `x86_64` 分别创建独立构建环境，默认目录分别是 `.venv-macos-arm64` 和 `.venv-macos-x86_64`
+- `x86_64` 构建不会复用当前的 arm64 `.venv`
+- 如果没有提供兼容目标架构的 `ffmpeg`，脚本会直接报错
+
 构建产物：
 
 ```text
 dist/Apple Music Downloader.app
-dist/Apple Music Downloader.dmg
+dist/Apple Music Downloader-arm64.dmg
+dist/Apple Music Downloader-x86_64.dmg
 ```
 
 ### Windows 构建

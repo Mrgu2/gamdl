@@ -5,23 +5,126 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 BUILD_DIR="$ROOT_DIR/build"
 APP_NAME="Apple Music Downloader"
-APP_PATH="$DIST_DIR/$APP_NAME.app"
-DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 ICON_PATH="$ROOT_DIR/assets/macos/app-icon.icns"
 DMG_NOTE_NAME="IMPORTANT - First Launch ／ 首次启动说明.txt"
+HOST_ARCH="$(uname -m)"
+MACOS_ARCH="${MACOS_ARCH:-$HOST_ARCH}"
+MACOS_BUILD_PYTHON="${MACOS_BUILD_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.10/bin/python3}"
+MACOS_VENV_DIR="${MACOS_VENV_DIR:-$ROOT_DIR/.venv-macos-$MACOS_ARCH}"
+APP_PATH="$DIST_DIR/$APP_NAME.app"
+DMG_PATH="$DIST_DIR/$APP_NAME-$MACOS_ARCH.dmg"
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+case "$MACOS_ARCH" in
+  arm64)
+    UV_PYTHON_PLATFORM="aarch64-apple-darwin"
+    USE_ARCH_WRAPPER=0
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    ;;
+  x86_64)
+    UV_PYTHON_PLATFORM="x86_64-apple-darwin"
+    USE_ARCH_WRAPPER=1
+    export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+    ;;
+  *)
+    echo "Unsupported MACOS_ARCH: $MACOS_ARCH (expected arm64 or x86_64)"
+    exit 1
+    ;;
+esac
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv not found. Install uv first."
   exit 1
 fi
 
+if [[ ! -x "$MACOS_BUILD_PYTHON" ]]; then
+  echo "Python interpreter not found: $MACOS_BUILD_PYTHON"
+  exit 1
+fi
+
+binary_arches() {
+  lipo -archs "$1" 2>/dev/null || true
+}
+
+require_binary_arch() {
+  local binary="$1"
+  local target_arch="$2"
+  local archs
+  archs="$(binary_arches "$binary")"
+  if [[ -z "$archs" ]]; then
+    echo "Unable to inspect Mach-O architectures for: $binary"
+    exit 1
+  fi
+  if [[ " $archs " != *" $target_arch "* ]]; then
+    echo "Binary architecture mismatch: $binary supports [$archs], expected $target_arch"
+    exit 1
+  fi
+}
+
+run_for_target_arch() {
+  if [[ "$USE_ARCH_WRAPPER" == "1" ]]; then
+    arch -x86_64 "$@"
+  else
+    "$@"
+  fi
+}
+
+resolve_ffmpeg_source() {
+  local candidates=()
+  if [[ -n "${MACOS_FFMPEG_PATH:-}" ]]; then
+    candidates+=("$MACOS_FFMPEG_PATH")
+  fi
+  candidates+=(
+    "$ROOT_DIR/assets/macos/ffmpeg-$MACOS_ARCH"
+  )
+  if [[ "$MACOS_ARCH" == "arm64" ]]; then
+    candidates+=(
+      "$ROOT_DIR/assets/macos/ffmpeg"
+      "/opt/homebrew/bin/ffmpeg"
+    )
+  else
+    candidates+=(
+      "/usr/local/bin/ffmpeg"
+    )
+  fi
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 cd "$ROOT_DIR"
 rm -rf "$BUILD_DIR" "$APP_PATH" "$DMG_PATH"
 mkdir -p "$DIST_DIR"
 
-uv sync --extra desktop-build
+if ! FFMPEG_SOURCE="$(resolve_ffmpeg_source)"; then
+  echo "No ffmpeg found for $MACOS_ARCH. Set MACOS_FFMPEG_PATH or provide assets/macos/ffmpeg-$MACOS_ARCH."
+  exit 1
+fi
+require_binary_arch "$FFMPEG_SOURCE" "$MACOS_ARCH"
+
+UV_PROJECT_ENVIRONMENT="$MACOS_VENV_DIR" uv sync \
+  --extra desktop-build \
+  --locked \
+  --no-editable \
+  --python "$MACOS_BUILD_PYTHON" \
+  --python-platform "$UV_PYTHON_PLATFORM"
+
+if [[ ! -x "$MACOS_VENV_DIR/bin/python" ]]; then
+  echo "Build environment python not found: $MACOS_VENV_DIR/bin/python"
+  exit 1
+fi
+
+ACTUAL_BUILD_ARCH="$(run_for_target_arch "$MACOS_VENV_DIR/bin/python" -c 'import platform; print(platform.machine())')"
+if [[ "$ACTUAL_BUILD_ARCH" != "$MACOS_ARCH" ]]; then
+  echo "Build environment architecture mismatch: expected $MACOS_ARCH, got $ACTUAL_BUILD_ARCH"
+  exit 1
+fi
+
 "$ROOT_DIR/scripts/generate-macos-icon.sh"
 
 PYINSTALLER_ARGS=(
@@ -34,20 +137,19 @@ PYINSTALLER_ARGS=(
   --hidden-import webview.platforms.cocoa
   --hidden-import AppKit
   --hidden-import WebKit
+  --target-arch "$MACOS_ARCH"
   --add-data "README.md:."
 )
 
-if [[ -f "$ROOT_DIR/assets/macos/ffmpeg" ]]; then
-  chmod +x "$ROOT_DIR/assets/macos/ffmpeg"
-fi
+chmod +x "$FFMPEG_SOURCE"
 
-uv run pyinstaller \
+run_for_target_arch "$MACOS_VENV_DIR/bin/python" -m PyInstaller \
   "${PYINSTALLER_ARGS[@]}" \
   gamdl/desktop_app.py
 
-if [[ -f "$ROOT_DIR/assets/macos/ffmpeg" ]]; then
-  uv run python "$ROOT_DIR/scripts/bundle_macos_ffmpeg.py" "$APP_PATH" "$ROOT_DIR/assets/macos/ffmpeg"
-fi
+require_binary_arch "$APP_PATH/Contents/MacOS/$APP_NAME" "$MACOS_ARCH"
+"$MACOS_VENV_DIR/bin/python" "$ROOT_DIR/scripts/bundle_macos_ffmpeg.py" "$APP_PATH" "$FFMPEG_SOURCE"
+require_binary_arch "$APP_PATH/Contents/Frameworks/bin/ffmpeg" "$MACOS_ARCH"
 
 if [[ -n "${APPLE_DEVELOPER_IDENTITY:-}" ]]; then
   codesign \

@@ -19,6 +19,7 @@ __pycache__
 !assets/macos/app-icon.svg
 !assets/macos/app-icon-1024.png
 !assets/macos/app-icon.icns
+!assets/macos/ffmpeg-x86_64
 !assets/macos/AppIcon.iconset/
 !assets/macos/AppIcon.iconset/*.png
 !scripts/
