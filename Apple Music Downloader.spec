@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
+
+ROOT_DIR = Path(__file__).resolve().parent
+ICON_PATH = ROOT_DIR / 'assets' / 'macos' / 'app-icon.icns'
 
 datas = [('README.md', '.')]
 binaries = []
@@ -39,7 +43,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['/Users/wenjiegu/Downloads/gamdl-mrgu2/assets/macos/app-icon.icns'],
+    icon=[str(ICON_PATH)],
 )
 coll = COLLECT(
     exe,
@@ -53,6 +57,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Apple Music Downloader.app',
-    icon='/Users/wenjiegu/Downloads/gamdl-mrgu2/assets/macos/app-icon.icns',
+    icon=str(ICON_PATH),
     bundle_identifier=None,
 )

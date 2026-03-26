@@ -19,7 +19,7 @@ from .hardcoded_wvd import HARDCODED_WVD
 class AppleMusicBaseDownloader:
     def __init__(
         self,
-        output_path: str = "/Users/wenjiegu/Downloads",
+        output_path: str = "./Apple Music",
         temp_path: str = ".",
         wvd_path: str = None,
         overwrite: bool = False,
@@ -97,7 +97,8 @@ class AppleMusicBaseDownloader:
     def get_wrapper_m3u8_ip(self) -> str:
         host, _sep, port = self.wrapper_decrypt_ip.rpartition(":")
         if not host:
-            host = self.wrapper_decrypt_ip
+            host = "127.0.0.1"
+            port = self.wrapper_decrypt_ip
         m3u8_port = int(port) + 10000 if port else 20020
         return f"{host}:{m3u8_port}"
 

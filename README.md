@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.0.5
+# Gamdl Desktop Fork 1.0.6
 
-[![Release](https://img.shields.io/badge/release-1.0.5-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.0.6-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.0.5` 的目标很明确：
+`Gamdl Desktop Fork 1.0.6` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -26,9 +26,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.5 发布内容
+## 1.0.6 发布内容
 
-正式版 `1.0.5` 这次只发布 macOS 桌面包：
+正式版 `1.0.6` 这次继续发布 macOS 桌面包：
 
 - `macOS dmg 安装包`
   - 面向 macOS
@@ -36,12 +36,11 @@
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖 macOS 登录链路稳定性修复，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖一轮回归修正，并继续沿用之前 release 的分发方式：
 
-- macOS 主登录路径改为浏览器辅助登录，会按你在界面里选择的浏览器拉起登录页
-- 登录完成后会自动轮询并导入 `media-user-token`，不再依赖不稳定的嵌入式登录窗
-- 下载页与首次设置页统一支持 `Chrome / Edge / Brave / Firefox`
-- README、运行时提示与 release 说明统一更新到当前真实行为
+- 恢复 CLI 的机器无关默认下载目录
+- 修复 wrapper 只填端口时的地址推导错误
+- 修复 macOS 打包 spec 中的本机绝对路径，允许在其他目录和 CI 直接构建
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -101,7 +100,7 @@ macOS 包说明：
 
 ### Windows
 
-当前 `1.0.5` release 不附带 Windows 安装包。
+当前 `1.0.6` release 不附带 Windows 安装包。
 
 Windows 包说明：
 
