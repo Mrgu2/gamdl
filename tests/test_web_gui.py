@@ -186,6 +186,7 @@ class FakeDownloader:
 class WebGuiHelpersTests(unittest.TestCase):
     def test_index_html_includes_wrapper_install_guide(self):
         self.assertIn("Docker 官方安装文档", INDEX_HTML)
+        self.assertIn('rel="icon"', INDEX_HTML)
         self.assertIn("https://docs.docker.com/desktop/setup/install/mac-install/", INDEX_HTML)
         self.assertIn("docker build -t wrapper-local .", INDEX_HTML)
         self.assertIn("wrapper-latest-10022", INDEX_HTML)
@@ -214,6 +215,27 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn('data-page="convert"', INDEX_HTML)
         self.assertIn('id="page-convert"', INDEX_HTML)
         self.assertIn('id="submit-convert-btn"', INDEX_HTML)
+        self.assertIn('id="open-logs-folder-btn"', INDEX_HTML)
+        self.assertIn('id="logs-folder-path"', INDEX_HTML)
+        self.assertIn('for="setup-browser-select"', INDEX_HTML)
+        self.assertIn('for="browser-select"', INDEX_HTML)
+        self.assertIn('aria-label="首次设置登录浏览器"', INDEX_HTML)
+        self.assertIn('aria-label="账号页登录浏览器"', INDEX_HTML)
+        self.assertIn("sr-only", INDEX_HTML)
+        self.assertIn("log-scroll-panel", INDEX_HTML)
+        self.assertIn("job-log-scroll", INDEX_HTML)
+        self.assertIn("app-log-scroll", INDEX_HTML)
+        self.assertIn("selectionInsideLogs", INDEX_HTML)
+        self.assertIn("shouldStickToBottom", INDEX_HTML)
+        self.assertIn("output.contains(activeSelection.anchorNode)", INDEX_HTML)
+        self.assertIn("scroller.scrollTop = scroller.scrollHeight", INDEX_HTML)
+        self.assertIn("throw new Error('请先完成 Apple Music 登录。');", INDEX_HTML)
+        self.assertIn("throw new Error('当前已关闭浏览器导入功能。请先在设置中重新开启。');", INDEX_HTML)
+        self.assertIn("throw new Error('当前所选音质需要启用外部 wrapper。请先打开“启用 wrapper”，或切回 AAC。');", INDEX_HTML)
+        self.assertIn("button.disabled = !browserImportEnabled;", INDEX_HTML)
+        self.assertIn("button.title = browserImportMessage;", INDEX_HTML)
+        self.assertIn("const canShowOutputAction = supportsFileActions && Boolean(job.payload?.output_path);", INDEX_HTML)
+        self.assertIn("const errorCount = typeof result.errors === 'number' ? result.errors : (job.error_message ? 1 : 0);", INDEX_HTML)
         self.assertIn('id="select-convert-file-btn"', INDEX_HTML)
         self.assertIn('id="select-convert-input-folder-btn"', INDEX_HTML)
         self.assertIn('id="select-convert-output-btn"', INDEX_HTML)
@@ -572,13 +594,80 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(data["session"]["login_method"], "browser-import")
         self.assertEqual(data["session"]["browser"], "chrome")
 
+    def test_auth_import_browser_rejected_when_disabled(self):
+        self.server.settings_store.save({"browser_import_enabled": False})
+
+        status, data = self._post_json_error("/api/auth/import-browser", {"browser": "chrome"})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "当前已关闭浏览器导入功能。请先在设置中重新开启。")
+
     def test_diagnostics_export_creates_zip(self):
         data = self._post_json("/api/diagnostics/export", {})
         bundle_path = Path(data["bundle_path"])
         self.assertTrue(bundle_path.exists())
         self.assertEqual(bundle_path.suffix, ".zip")
 
+    def test_logs_endpoint_returns_folder_path(self):
+        data = self._get_json("/api/logs")
+
+        self.assertIn("channels", data)
+        self.assertEqual(data["folder_path"], str(self.paths.logs_dir))
+
+    def test_open_logs_folder_uses_logs_directory(self):
+        self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
+
+        data = self._post_json("/api/logs/open-folder", {})
+
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["folder_path"], str(self.paths.logs_dir))
+        self.assertEqual(
+            self.server.file_actions.calls[-1],
+            ("open_output", str(self.paths.logs_dir)),
+        )
+
+    def test_create_job_requires_logged_in_session(self):
+        self.server.auth_manager.logout()
+
+        status, data = self._post_json_error(
+            "/api/jobs",
+            {
+                "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "log_level": "INFO",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "请先完成 Apple Music 登录。")
+
+    def test_create_job_rejects_wrapper_required_codec_when_wrapper_disabled(self):
+        self.server.auth_manager.login_with_webview()
+
+        status, data = self._post_json_error(
+            "/api/jobs",
+            {
+                "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "log_level": "INFO",
+                "song_codec": "alac",
+                "use_wrapper": False,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            data["error"],
+            "当前所选音质需要启用外部 wrapper。请先打开“启用 wrapper”，或切回 AAC。",
+        )
+
     def test_create_job_uses_internal_download_service(self):
+        self.server.auth_manager.login_with_webview()
         downloads_path = self.paths.app_support_dir / "downloads"
         latest_media_path = str(downloads_path / "Artist" / "Song.m4a")
         with patch(
@@ -609,6 +698,36 @@ class WebGuiApiTests(unittest.TestCase):
             self.assertEqual(job["result"]["downloaded_items"], 1)
             self.assertEqual(job["result"]["latest_media_path"], latest_media_path)
             self.assertEqual(job["result"]["latest_media_dir"], str(Path(latest_media_path).parent))
+
+    def test_failed_download_job_records_error_result(self):
+        self.server.auth_manager.login_with_webview()
+        downloads_path = self.paths.app_support_dir / "downloads"
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            side_effect=RuntimeError("尚未登录 Apple Music。"),
+        ):
+            data = self._post_json(
+                "/api/jobs",
+                {
+                    "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
+                    "output_path": str(downloads_path),
+                    "overwrite": False,
+                    "save_cover": True,
+                    "log_level": "INFO",
+                },
+            )
+            job_id = data["id"]
+            for _ in range(30):
+                job = self._get_json(f"/api/jobs/{job_id}")
+                if job["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error_message"], "尚未登录 Apple Music。")
+        self.assertEqual(job["result"]["errors"], 1)
+        self.assertEqual(job["result"]["downloaded_items"], 0)
+        self.assertEqual(job["result"]["output_path"], str(downloads_path))
 
     def test_create_convert_job_uses_internal_conversion_service(self):
         input_file = self.paths.app_support_dir / "input" / "Track.m4a"

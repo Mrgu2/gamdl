@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.0.6
+# Gamdl Desktop Fork 1.0.7
 
-[![Release](https://img.shields.io/badge/release-1.0.6-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.0.7-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.0.6` 的目标很明确：
+`Gamdl Desktop Fork 1.0.7` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单下载
@@ -26,21 +26,26 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.6 发布内容
+## 1.0.7 发布内容
 
-正式版 `1.0.6` 这次继续发布 macOS 桌面包：
+正式版 `1.0.7` 这次继续发布 macOS 桌面包：
 
-- `macOS dmg 安装包`
-  - 面向 macOS
+- `Apple Music Downloader-arm64.dmg`
+  - 面向 Apple Silicon Mac
+  - 包含桌面应用和内置 `ffmpeg`
+- `Apple Music Downloader-x86_64.dmg`
+  - 面向 Intel Mac
   - 包含桌面应用和内置 `ffmpeg`
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖一轮回归修正，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖一轮下载链路和桌面 Web UI 的回归修正，并继续沿用之前 release 的分发方式：
 
-- 恢复 CLI 的机器无关默认下载目录
-- 修复 wrapper 只填端口时的地址推导错误
-- 修复 macOS 打包 spec 中的本机绝对路径，允许在其他目录和 CI 直接构建
+- 日志页新增“打开日志目录”，日志刷新会保持贴底并避免打断复制
+- 浏览器导入开关现在会真正生效，关闭后前后端都会拒绝导入
+- 下载页会前置拦截“未登录”和“ALAC/Atmos 但未启用 wrapper”的无效提交
+- 失败任务会正确显示错误数，并保留“打开下载目录”
+- 当歌曲没有可用流信息时，会明确报成格式不可用而不是吞成其他异常
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -95,12 +100,12 @@
 macOS 包说明：
 
 - 当前发布包内置 `ffmpeg`
-- 当前 release 附带的是 Apple Silicon 构建
+- 当前 release 同时附带 Apple Silicon 和 Intel 构建
 - 如需重新打包，请参考下方构建说明
 
 ### Windows
 
-当前 `1.0.6` release 不附带 Windows 安装包。
+当前 `1.0.7` release 不附带 Windows 安装包。
 
 Windows 包说明：
 

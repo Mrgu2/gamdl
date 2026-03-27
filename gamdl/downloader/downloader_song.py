@@ -6,7 +6,7 @@ from ..interface.interface_song import AppleMusicSongInterface
 from ..interface.types import DecryptionKeyAv
 from .amdecrypt import decrypt_file, decrypt_file_hex
 from .downloader_base import AppleMusicBaseDownloader
-from .exceptions import ExperimentalCodecRequiresWrapper
+from .exceptions import ExperimentalCodecRequiresWrapper, FormatNotAvailable
 from .types import DownloadItem
 
 
@@ -99,6 +99,9 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
                         if wrapper_stream_info:
                             download_item.stream_info = wrapper_stream_info
                 break
+
+        if not download_item.stream_info or not download_item.stream_info.audio_track:
+            raise FormatNotAvailable(song_id)
 
         if download_item.stream_info.audio_track.legacy:
             download_item.decryption_key = (

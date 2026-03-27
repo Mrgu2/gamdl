@@ -180,6 +180,12 @@ class JobManager:
         urls = parse_url_input(payload.get("url_text", ""))
         if not urls:
             raise ValueError("请至少输入一个 Apple Music 链接。")
+        if not self.auth_manager.get_session_status(verify=False).connected:
+            raise ValueError("请先完成 Apple Music 登录。")
+        requested_codec = str(payload.get("song_codec") or "").strip().lower()
+        use_wrapper = bool(payload.get("use_wrapper"))
+        if requested_codec in {"alac", "atmos"} and not use_wrapper:
+            raise ValueError("当前所选音质需要启用外部 wrapper。请先打开“启用 wrapper”，或切回 AAC。")
         url_preview = [classify_url(url) for url in urls]
         if any(not item["valid"] for item in url_preview):
             raise ValueError("包含无法识别的链接，请先修正。")
@@ -291,6 +297,24 @@ class JobManager:
             job.return_code = 1
             job.error_category = _classify_error(exc)
             job.error_message = str(exc)
+            if job.kind == "convert":
+                job.result = {
+                    "total_files": 0,
+                    "converted_files": 0,
+                    "skipped_files": 0,
+                    "errors": 1,
+                    "latest_media_path": None,
+                    "latest_media_dir": None,
+                }
+            else:
+                job.result = {
+                    "downloaded_items": 0,
+                    "skipped_items": 0,
+                    "errors": 1,
+                    "output_path": job.payload.get("output_path"),
+                    "latest_media_path": None,
+                    "latest_media_dir": None,
+                }
         finally:
             job.finished_at = time.time()
 
@@ -378,7 +402,12 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"session": self.server.auth_manager.get_session_status(verify=False).__dict__})
             return
         if parsed.path == "/api/logs":
-            self._send_json({"channels": self.server.log_store.export()})
+            self._send_json(
+                {
+                    "channels": self.server.log_store.export(),
+                    "folder_path": str(self.server.paths.logs_dir),
+                }
+            )
             return
         if parsed.path == "/api/about":
             settings = self.server.settings_store.load()
@@ -544,6 +573,13 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/auth/import-browser":
+            settings = self.server.settings_store.load()
+            if not settings.browser_import_enabled:
+                self._send_json(
+                    {"error": "当前已关闭浏览器导入功能。请先在设置中重新开启。"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             browser_name = payload.get("browser")
             if browser_name not in SUPPORTED_BROWSER_IMPORTS:
                 self._send_json({"error": "Unsupported browser"}, HTTPStatus.BAD_REQUEST)
@@ -588,6 +624,18 @@ class WebGuiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/diagnostics/export":
             bundle = self.server.diagnostics.export_bundle()
             self._send_json({"bundle_path": str(bundle)})
+            return
+
+        if parsed.path == "/api/logs/open-folder":
+            try:
+                self.server.file_actions.open_output(str(self.server.paths.logs_dir))
+            except RuntimeError as exc:
+                self._send_json(
+                    {"error": str(exc), "category": "filesystem"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            self._send_json({"ok": True, "folder_path": str(self.server.paths.logs_dir)})
             return
 
         self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -870,6 +918,7 @@ INDEX_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Apple Music Downloader</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d7004e'/%3E%3Cpath d='M27 41V21l18-4v21' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='19' cy='43' r='6' fill='%23fff'/%3E%3Ccircle cx='45' cy='39' r='6' fill='%23fff'/%3E%3C/svg%3E">
   <style>
     :root {
       --bg: #f3f4f6;
@@ -926,6 +975,17 @@ INDEX_HTML = """<!doctype html>
     .brand {
       padding: 12px 14px 16px;
       border-bottom: 1px solid var(--line);
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
     .brand-head {
       display: grid;
@@ -1421,6 +1481,37 @@ INDEX_HTML = """<!doctype html>
       font-size: 12px;
       line-height: 1.55;
       color: #27231f;
+    }
+    .log-scroll-panel {
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.74);
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .job-log-scroll {
+      height: 160px;
+    }
+    .app-log-scroll {
+      max-height: min(58vh, 560px);
+    }
+    .log-scroll-panel::-webkit-scrollbar {
+      width: 10px;
+    }
+    .log-scroll-panel::-webkit-scrollbar-track {
+      background: rgba(226, 229, 234, .72);
+      border-radius: 999px;
+    }
+    .log-scroll-panel::-webkit-scrollbar-thumb {
+      background: rgba(125, 133, 149, .72);
+      border-radius: 999px;
+      border: 2px solid rgba(226, 229, 234, .72);
+    }
+    .log-scroll-panel::-webkit-scrollbar-thumb:hover {
+      background: rgba(96, 105, 123, .82);
     }
     .segment {
       display: inline-flex;
@@ -2147,7 +2238,8 @@ INDEX_HTML = """<!doctype html>
             </div>
             <div class="inline">
               <button class="btn primary" id="setup-login-webview-btn">浏览器辅助登录</button>
-              <select id="setup-browser-select" style="max-width: 180px">
+              <label class="sr-only" for="setup-browser-select">首次设置登录浏览器</label>
+              <select id="setup-browser-select" aria-label="首次设置登录浏览器" style="max-width: 180px">
                 <option value="chrome">Chrome</option>
                 <option value="edge">Edge</option>
                 <option value="brave">Brave</option>
@@ -2267,15 +2359,16 @@ INDEX_HTML = """<!doctype html>
                   <div class="list-head">
                     <strong id="account-headline">未登录</strong>
                     <span class="badge" id="account-method">No Session</span>
-                  </div>
-                  <div class="muted" id="account-detail">显示当前账号状态。</div>
                 </div>
-                <div class="inline">
-                  <button class="btn primary" id="login-webview-btn">浏览器辅助登录</button>
-                  <select id="browser-select" style="max-width: 180px">
-                    <option value="chrome">Chrome</option>
-                    <option value="edge">Edge</option>
-                    <option value="brave">Brave</option>
+                <div class="muted" id="account-detail">显示当前账号状态。</div>
+              </div>
+              <div class="inline">
+                <button class="btn primary" id="login-webview-btn">浏览器辅助登录</button>
+                <label class="sr-only" for="browser-select">账号页登录浏览器</label>
+                  <select id="browser-select" aria-label="账号页登录浏览器" style="max-width: 180px">
+                  <option value="chrome">Chrome</option>
+                  <option value="edge">Edge</option>
+                  <option value="brave">Brave</option>
                     <option value="firefox">Firefox</option>
                   </select>
                   <button class="btn" id="browser-import-btn">导入浏览器登录态</button>
@@ -2438,14 +2531,18 @@ INDEX_HTML = """<!doctype html>
         <article class="card">
           <div class="card-head">
             <h3>应用日志</h3>
-            <div class="segment">
-              <button class="active" data-log-channel="app">App</button>
-              <button data-log-channel="auth">Auth</button>
-              <button data-log-channel="download">Download</button>
+            <div class="inline">
+              <div class="segment">
+                <button class="active" data-log-channel="app">App</button>
+                <button data-log-channel="auth">Auth</button>
+                <button data-log-channel="download">Download</button>
+              </div>
+              <button class="btn" id="open-logs-folder-btn" type="button">打开日志目录</button>
             </div>
           </div>
           <div class="card-body">
-            <div class="list-item"><pre id="logs-output">正在加载日志…</pre></div>
+            <div class="muted" id="logs-folder-path">日志目录：读取中…</div>
+            <div class="log-scroll-panel app-log-scroll"><pre id="logs-output">正在加载日志…</pre></div>
           </div>
         </article>
       </section>
@@ -2644,6 +2741,7 @@ docker stop wrapper-latest-10022</pre>
       runtime: null,
       wrapperStatus: null,
       logs: {},
+      logFolderPath: '',
       currentLogChannel: 'app',
       needsSetup: true,
       pages: {
@@ -3024,10 +3122,12 @@ docker stop wrapper-latest-10022</pre>
         const isConvert = job.kind === 'convert';
         const latestMediaPath = result.latest_media_path || '';
         const supportsFileActions = Boolean(state.runtime?.file_actions_supported);
-        const canShowFileActions = supportsFileActions && (job.status === 'completed' || latestMediaPath);
+        const canShowOutputAction = supportsFileActions && Boolean(job.payload?.output_path);
+        const canShowMediaActions = supportsFileActions && Boolean(latestMediaPath);
+        const errorCount = typeof result.errors === 'number' ? result.errors : (job.error_message ? 1 : 0);
         const fileActionHint = latestMediaPath
           ? `<div class="muted">最近成功文件：${escapeHtml(latestMediaPath)}</div>`
-          : `<div class="muted">当前${isConvert ? '转换' : '下载'}任务没有成功输出的媒体文件，只能打开输出目录。</div>`;
+          : `<div class="muted">当前${isConvert ? '转换' : '下载'}任务没有成功输出的媒体文件。</div>`;
         const actions = job.status === 'queued'
           ? `<button class="btn" onclick="cancelJob('${job.id}')">取消</button>`
           : '';
@@ -3046,28 +3146,28 @@ docker stop wrapper-latest-10022</pre>
           `;
         const detailCopy = isConvert
           ? `<div class="muted">输入：${escapeHtml(job.payload.input_path || '')}<br>输出：${escapeHtml(job.payload.output_path || '')}<br>格式：${escapeHtml((job.payload.target_format || '').toUpperCase())}</div>`
-          : `<div class="muted">${job.urls.join('<br>')}</div>`;
+          : `<div class="muted">${job.urls.map((url) => escapeHtml(url)).join('<br>')}</div>`;
         const summaryBadges = isConvert
           ? `
               <span class="badge">成功 ${result.converted_files || 0}</span>
               <span class="badge">跳过 ${result.skipped_files || 0}</span>
               <span class="badge">文件 ${result.total_files || 0}</span>
-              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${result.errors || 0}</span>
+              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${errorCount}</span>
             `
           : `
               <span class="badge">成功 ${result.downloaded_items || 0}</span>
               <span class="badge">跳过 ${result.skipped_items || 0}</span>
-              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${result.errors || 0}</span>
+              <span class="badge ${job.error_message ? 'danger' : ''}">错误 ${errorCount}</span>
             `;
-        const fileActions = canShowFileActions
+        const fileActions = canShowOutputAction
           ? `
             <div class="inline">
               <button class="btn soft" onclick="openJobOutput('${job.id}')">打开下载目录</button>
               <div class="menu-anchor split-pill-anchor ${latestMediaPath ? '' : 'disabled'}" data-job-id="${job.id}">
-                <button class="split-pill-main" type="button" onclick="openJobFile('${job.id}')" ${latestMediaPath ? '' : 'disabled title="当前任务没有可打开的下载文件"'}>打开文件</button>
-                <button class="split-pill-toggle" type="button" aria-label="打开方式" aria-haspopup="menu" aria-expanded="false" onclick="toggleOpenWithMenu('${job.id}', event)" ${latestMediaPath ? '' : 'disabled title="当前任务没有可打开的下载文件"'}><span class="split-pill-chevron" aria-hidden="true">›</span></button>
+                <button class="split-pill-main" type="button" onclick="openJobFile('${job.id}')" ${canShowMediaActions ? '' : 'disabled title="当前任务没有可打开的下载文件"'}>打开文件</button>
+                <button class="split-pill-toggle" type="button" aria-label="打开方式" aria-haspopup="menu" aria-expanded="false" onclick="toggleOpenWithMenu('${job.id}', event)" ${canShowMediaActions ? '' : 'disabled title="当前任务没有可打开的下载文件"'}><span class="split-pill-chevron" aria-hidden="true">›</span></button>
               </div>
-              <button class="btn soft" onclick="revealJobFile('${job.id}')" ${latestMediaPath ? '' : 'disabled title="当前任务没有可显示位置的下载文件"'}>显示文件位置</button>
+              <button class="btn soft" onclick="revealJobFile('${job.id}')" ${canShowMediaActions ? '' : 'disabled title="当前任务没有可显示位置的下载文件"'}>显示文件位置</button>
             </div>
             ${fileActionHint}
           `
@@ -3087,8 +3187,8 @@ docker stop wrapper-latest-10022</pre>
               ${actions}
             </div>
             ${fileActions}
-            <div class="list-item" style="padding: 12px;">
-              <pre>${(job.logs || []).slice(-10).join('\\n') || '暂无日志'}</pre>
+            <div class="log-scroll-panel job-log-scroll">
+              <pre>${escapeHtml((job.logs || []).slice(-10).join('\\n') || '暂无日志')}</pre>
             </div>
           </div>
         `;
@@ -3132,10 +3232,36 @@ docker stop wrapper-latest-10022</pre>
       }).join('');
     }
 
-    function renderLogs(channels) {
+    function renderLogs(data) {
+      const channels = data.channels || {};
       state.logs = channels;
+      state.logFolderPath = data.folder_path || '';
       const output = document.getElementById('logs-output');
-      output.textContent = (channels[state.currentLogChannel] || []).join('\\n') || '暂无日志';
+      const scroller = output ? output.closest('.log-scroll-panel') : null;
+      const folderPath = document.getElementById('logs-folder-path');
+      const nextText = (channels[state.currentLogChannel] || []).join('\\n') || '暂无日志';
+      const activeSelection = window.getSelection();
+      const selectionInsideLogs = Boolean(
+        output
+        && activeSelection
+        && activeSelection.rangeCount > 0
+        && output.contains(activeSelection.anchorNode)
+        && output.contains(activeSelection.focusNode)
+        && activeSelection.toString()
+      );
+      const shouldStickToBottom = Boolean(
+        scroller
+        && (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop) <= 4
+      );
+      if (output && output.textContent !== nextText && !selectionInsideLogs) {
+        output.textContent = nextText;
+        if (shouldStickToBottom && scroller) {
+          scroller.scrollTop = scroller.scrollHeight;
+        }
+      }
+      if (folderPath) {
+        folderPath.textContent = `日志目录：${state.logFolderPath || '未知'}`;
+      }
       document.querySelectorAll('[data-log-channel]').forEach((button) => {
         button.classList.toggle('active', button.dataset.logChannel === state.currentLogChannel);
       });
@@ -3234,6 +3360,11 @@ docker stop wrapper-latest-10022</pre>
       if (!runtime.folder_picker_supported) {
         convertOutput.placeholder = '请输入完整输出目录路径';
       }
+      const openLogsButton = document.getElementById('open-logs-folder-btn');
+      if (openLogsButton) {
+        openLogsButton.disabled = !runtime.file_actions_supported;
+        openLogsButton.title = runtime.file_actions_supported ? '' : '当前环境不支持直接打开本机目录';
+      }
 
       document.getElementById('select-convert-file-btn').disabled = !runtime.file_picker_supported;
       document.getElementById('select-convert-file-btn').title = runtime.file_picker_supported ? '' : runtime.input_path_message;
@@ -3262,6 +3393,17 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('wrapper-decrypt-ip').value = settings.wrapper_decrypt_ip || DEFAULT_WRAPPER_DECRYPT_IP;
       document.getElementById('open-file-application').value = settings.open_file_application || '';
       document.getElementById('browser-import-enabled').value = String(settings.browser_import_enabled);
+      const browserImportButtons = [
+        document.getElementById('browser-import-btn'),
+        document.getElementById('setup-browser-import-btn'),
+      ];
+      const browserImportEnabled = settings.browser_import_enabled !== false;
+      const browserImportMessage = browserImportEnabled ? '' : '当前已关闭浏览器导入功能。请先在设置中重新开启。';
+      browserImportButtons.forEach((button) => {
+        if (!button) return;
+        button.disabled = !browserImportEnabled;
+        button.title = browserImportMessage;
+      });
       applyTheme(settings.theme || 'warm');
       if (!document.getElementById('convert-output-path').value.trim()) {
         document.getElementById('convert-output-path').value = settings.output_path || '';
@@ -3326,7 +3468,7 @@ docker stop wrapper-latest-10022</pre>
 
     async function refreshLogs() {
       const data = await api('/api/logs');
-      renderLogs(data.channels);
+      renderLogs(data);
     }
 
     async function refreshAbout() {
@@ -3344,6 +3486,14 @@ docker stop wrapper-latest-10022</pre>
     }
 
     async function submitJob() {
+      if (!state.session || !state.session.connected) {
+        throw new Error('请先完成 Apple Music 登录。');
+      }
+      const selectedCodec = document.getElementById('song-codec').value;
+      const useWrapper = document.getElementById('use-wrapper').value === 'true';
+      if ((selectedCodec === 'alac' || selectedCodec === 'atmos') && !useWrapper) {
+        throw new Error('当前所选音质需要启用外部 wrapper。请先打开“启用 wrapper”，或切回 AAC。');
+      }
       const payload = collectSettingsPayload();
       payload.url_text = document.getElementById('url-input').value;
       const data = await api('/api/jobs', {
@@ -3678,6 +3828,9 @@ docker stop wrapper-latest-10022</pre>
     }
 
     async function importFromBrowser() {
+      if (document.getElementById('browser-import-enabled').value !== 'true') {
+        throw new Error('当前已关闭浏览器导入功能。请先在设置中重新开启。');
+      }
       const browser = document.getElementById('browser-select').value;
       const data = await api('/api/auth/import-browser', {
         method: 'POST',
@@ -3699,6 +3852,9 @@ docker stop wrapper-latest-10022</pre>
     }
 
     async function setupImportFromBrowser() {
+      if (document.getElementById('browser-import-enabled').value !== 'true') {
+        throw new Error('当前已关闭浏览器导入功能。请先在设置中重新开启。');
+      }
       const browser = document.getElementById('setup-browser-select').value;
       const data = await api('/api/auth/import-browser', {
         method: 'POST',
@@ -3724,6 +3880,14 @@ docker stop wrapper-latest-10022</pre>
         body: '{}',
       });
       showToast(`诊断包已生成：${data.bundle_path}`);
+    }
+
+    async function openLogsFolder() {
+      const data = await api('/api/logs/open-folder', {
+        method: 'POST',
+        body: '{}',
+      });
+      showToast(`已打开日志目录：${data.folder_path}`);
     }
 
     function bindEvents() {
@@ -3760,10 +3924,11 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('complete-setup-btn').addEventListener('click', () => runAction(completeSetup));
       document.getElementById('logout-btn').addEventListener('click', () => runAction(logout));
       document.getElementById('export-diagnostics-btn').addEventListener('click', () => runAction(exportDiagnostics));
+      document.getElementById('open-logs-folder-btn').addEventListener('click', () => runAction(openLogsFolder));
       document.querySelectorAll('[data-log-channel]').forEach((button) => {
         button.addEventListener('click', () => {
           state.currentLogChannel = button.dataset.logChannel;
-          renderLogs(state.logs);
+          renderLogs({ channels: state.logs, folder_path: state.logFolderPath });
         });
       });
       syncConvertMode();

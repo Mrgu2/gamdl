@@ -99,7 +99,7 @@ resolve_ffmpeg_source() {
 
 cd "$ROOT_DIR"
 rm -rf "$BUILD_DIR" "$APP_PATH" "$DMG_PATH"
-mkdir -p "$DIST_DIR"
+mkdir -p "$DIST_DIR" "$BUILD_DIR"
 
 if ! FFMPEG_SOURCE="$(resolve_ffmpeg_source)"; then
   echo "No ffmpeg found for $MACOS_ARCH. Set MACOS_FFMPEG_PATH or provide assets/macos/ffmpeg-$MACOS_ARCH."
@@ -138,12 +138,13 @@ PYINSTALLER_ARGS=(
   --hidden-import AppKit
   --hidden-import WebKit
   --target-arch "$MACOS_ARCH"
-  --add-data "README.md:."
+  --add-data "$ROOT_DIR/README.md:."
 )
 
 chmod +x "$FFMPEG_SOURCE"
 
 run_for_target_arch "$MACOS_VENV_DIR/bin/python" -m PyInstaller \
+  --specpath "$BUILD_DIR" \
   "${PYINSTALLER_ARGS[@]}" \
   gamdl/desktop_app.py
 
