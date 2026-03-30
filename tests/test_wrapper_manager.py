@@ -1,8 +1,16 @@
+import socket
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from gamdl.app.wrapper_manager import WrapperManager, prioritize_wrapper_candidates
+from gamdl.app.wrapper_manager import (
+    MAX_WRAPPER_DECRYPT_PORT,
+    WrapperManager,
+    parse_wrapper_decrypt_ip,
+    prioritize_wrapper_candidates,
+)
 
 
 class WrapperManagerTests(unittest.TestCase):
@@ -49,6 +57,47 @@ class WrapperManagerTests(unittest.TestCase):
             manager = WrapperManager()
 
         self.assertEqual(manager.docker_bin, "/opt/homebrew/bin/docker")
+
+    def test_docker_available_tolerates_slightly_slow_docker_cli(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            fake_docker = Path(tempdir) / "docker"
+            fake_docker.write_text("#!/bin/sh\nsleep 3\nexit 0\n", encoding="utf-8")
+            fake_docker.chmod(0o755)
+
+            manager = WrapperManager(docker_bin=str(fake_docker))
+
+            self.assertTrue(manager._docker_available())
+
+    def test_start_container_tolerates_slightly_slow_docker_cli(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            fake_docker = Path(tempdir) / "docker"
+            fake_docker.write_text("#!/bin/sh\nsleep 3\nexit 0\n", encoding="utf-8")
+            fake_docker.chmod(0o755)
+
+            manager = WrapperManager(docker_bin=str(fake_docker))
+
+            self.assertTrue(manager._start_container("wrapper-latest-10022"))
+
+    @patch(
+        "gamdl.app.wrapper_manager.socket.getaddrinfo",
+        return_value=[(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 10022, 0, 0))],
+    )
+    @patch("gamdl.app.wrapper_manager.socket.socket")
+    def test_is_port_open_supports_ipv6_loopback(self, socket_ctor, _getaddrinfo):
+        probe = MagicMock()
+        probe.__enter__.return_value = probe
+        probe.connect_ex.return_value = 0
+        socket_ctor.return_value = probe
+
+        self.assertTrue(WrapperManager._is_port_open("::1", 10022))
+        socket_ctor.assert_called_once_with(socket.AF_INET6, socket.SOCK_STREAM, 0)
+        probe.connect_ex.assert_called_once_with(("::1", 10022, 0, 0))
+
+    def test_parse_wrapper_decrypt_ip_rejects_ports_without_m3u8_headroom(self):
+        with self.assertRaises(ValueError) as error:
+            parse_wrapper_decrypt_ip(str(MAX_WRAPPER_DECRYPT_PORT + 1))
+
+        self.assertIn(str(MAX_WRAPPER_DECRYPT_PORT), str(error.exception))
 
 
 if __name__ == "__main__":

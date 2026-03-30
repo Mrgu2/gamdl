@@ -35,6 +35,7 @@ from .app import (
 )
 from .app.settings import AppSettings
 from .desktop_runtime import detect_desktop_runtime
+from .downloader import ArtistAutoSelect
 from .downloader.constants import VALID_URL_PATTERN
 
 logger = logging.getLogger("gamdl.app.web")
@@ -42,11 +43,29 @@ logger = logging.getLogger("gamdl.app.web")
 MAX_LOG_LINES = 4000
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+API_REQUEST_TOKEN_HEADER = "X-Gamdl-Request-Token"
+API_REQUEST_TOKEN_PLACEHOLDER = "__GAMDL_API_REQUEST_TOKEN__"
 GUI_SETTINGS_DEFAULTS = AppSettingsStore(AppPaths()).defaults().__dict__
 SUPPORTED_BROWSER_IMPORTS = [browser.value for browser in BrowserType]
-SUPPORTED_DOWNLOAD_KINDS = {"song", "album", "playlist", "library-playlist", "library-albums"}
+SUPPORTED_DOWNLOAD_KINDS = {
+    "song",
+    "album",
+    "artist",
+    "playlist",
+    "library-playlist",
+    "library-albums",
+}
 SUPPORTED_CONVERSION_FORMATS = {"flac", "mp3"}
 DEFAULT_WRAPPER_DECRYPT_IP = "127.0.0.1:10022"
+SUPPORTED_ARTIST_AUTO_SELECT = {
+    option.value: str(option)
+    for option in (
+        ArtistAutoSelect.TOP_SONGS,
+        ArtistAutoSelect.MAIN_ALBUMS,
+        ArtistAutoSelect.SINGLES_EPS,
+        ArtistAutoSelect.ALL_ALBUMS,
+    )
+}
 
 
 def parse_url_input(text: str) -> list[str]:
@@ -105,12 +124,14 @@ def build_download_command(payload: dict[str, Any]) -> list[str]:
         "output_path",
         "overwrite",
         "save_cover",
+        "save_playlist",
         "log_level",
         "song_codec",
+        "artist_auto_select",
         "use_wrapper",
         "wrapper_decrypt_ip",
     ):
-        if key in payload:
+        if key in payload and payload[key] not in {"", None}:
             cmd.append(f"{key}={payload[key]}")
     cmd.extend(payload.get("urls", []))
     return cmd
@@ -191,16 +212,35 @@ class JobManager:
             raise ValueError("包含无法识别的链接，请先修正。")
         if any(not item["supported"] for item in url_preview):
             unsupported = ", ".join(sorted({item["kind"] for item in url_preview if not item["supported"]}))
-            raise ValueError(f"首版仅支持歌曲、专辑和歌单，当前包含不支持的类型：{unsupported}")
+            raise ValueError(f"首版仅支持歌曲、专辑、歌单和艺术家，当前包含不支持的类型：{unsupported}")
+        if any(item["kind"] == "artist" for item in url_preview):
+            selected_artist_mode = str(payload.get("artist_auto_select") or "").strip()
+            if selected_artist_mode not in SUPPORTED_ARTIST_AUTO_SELECT:
+                raise ValueError("检测到艺术家链接，请先选择要下载的艺术家内容。")
 
-        settings = self.settings_store.save(payload)
+        job_artist_auto_select = selected_artist_mode if any(
+            item["kind"] == "artist" for item in url_preview
+        ) else ""
+        job_save_playlist = bool(payload.get("save_playlist"))
+        job_retry_items = [dict(item) for item in payload.get("retry_items") or [] if isinstance(item, dict)]
+        settings_payload = dict(payload)
+        settings_payload.pop("artist_auto_select", None)
+        settings_payload.pop("save_playlist", None)
+        settings_payload.pop("retry_items", None)
+        settings = self.settings_store.save(settings_payload)
+        job_payload = {
+            **settings.__dict__,
+            "artist_auto_select": job_artist_auto_select,
+            "save_playlist": job_save_playlist,
+            "retry_items": job_retry_items,
+        }
         job = Job(
             id=secrets.token_hex(8),
             kind="download",
             urls=urls,
             url_preview=url_preview,
-            payload={**settings.__dict__},
-            command=build_download_command({**settings.__dict__, "urls": urls}),
+            payload=job_payload,
+            command=build_download_command({**job_payload, "urls": urls}),
         )
         with self.jobs_lock:
             self.jobs[job.id] = job
@@ -331,10 +371,13 @@ class JobManager:
                 output_path=job.payload["output_path"],
                 overwrite=job.payload["overwrite"],
                 save_cover=job.payload["save_cover"],
+                save_playlist=bool(job.payload.get("save_playlist")),
                 log_level=job.payload["log_level"],
                 song_codec=job.payload["song_codec"],
                 use_wrapper=job.payload["use_wrapper"],
                 wrapper_decrypt_ip=job.payload["wrapper_decrypt_ip"],
+                artist_auto_select=job.payload.get("artist_auto_select") or None,
+                retry_items=[dict(item) for item in job.payload.get("retry_items") or [] if isinstance(item, dict)],
             )
         )
         job.result = result.to_dict()
@@ -436,7 +479,13 @@ class WebGuiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        payload = self._read_json()
+        if not self._verify_post_request():
+            return
+        try:
+            payload = self._read_json()
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
 
         if parsed.path == "/api/preview":
             urls = parse_url_input(payload.get("url_text", ""))
@@ -560,6 +609,10 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
+        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/retry-failed"):
+            self._handle_retry_failed_job(parsed.path)
+            return
+
         if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/open-output"):
             self._handle_job_file_action(parsed.path, "open-output", payload)
             return
@@ -648,10 +701,32 @@ class WebGuiHandler(BaseHTTPRequestHandler):
         if not length:
             return {}
         body = self.rfile.read(length)
-        return json.loads(body.decode("utf-8"))
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("请求体不是合法 JSON。") from exc
+
+    def _verify_post_request(self) -> bool:
+        content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._send_json(
+                {"error": "仅支持 application/json 请求。"},
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+            )
+            return False
+
+        request_token = str(self.headers.get(API_REQUEST_TOKEN_HEADER) or "").strip()
+        if not secrets.compare_digest(request_token, self.server.api_request_token):
+            self._send_json(
+                {"error": "请求缺少有效的本地会话令牌。请刷新页面后重试。"},
+                HTTPStatus.FORBIDDEN,
+            )
+            return False
+        return True
 
     def _send_html(self) -> None:
-        body = INDEX_HTML.encode("utf-8")
+        html = INDEX_HTML.replace(API_REQUEST_TOKEN_PLACEHOLDER, self.server.api_request_token)
+        body = html.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -805,6 +880,114 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_retry_failed_job(self, path: str) -> None:
+        job_id = path.split("/")[-2]
+        job = self.server.job_manager.get_job(job_id)
+        if not job:
+            self._send_json({"error": "Job not found"}, HTTPStatus.NOT_FOUND)
+            return
+        if job.kind != "download":
+            self._send_json({"error": "仅下载任务支持重试失败项。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if job.status not in {"completed", "failed"}:
+            self._send_json({"error": "请等待当前任务结束后再重试失败项。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        retry_items = []
+        retry_urls = []
+        seen = set()
+        for item in (job.result or {}).get("failed_items") or []:
+            item = item or {}
+            retry_target = item.get("retry_target")
+            if isinstance(retry_target, dict):
+                strategy = str(retry_target.get("strategy") or "").strip().lower()
+                retry_url = str(retry_target.get("song_url") or retry_target.get("url") or "").strip()
+                playlist_tags = retry_target.get("playlist_tags")
+                if strategy == "playlist-track" and retry_url and isinstance(playlist_tags, dict):
+                    dedupe_key = (
+                        strategy,
+                        retry_url,
+                        playlist_tags.get("playlist_id"),
+                        playlist_tags.get("playlist_track"),
+                    )
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    retry_items.append(
+                        {
+                            "title": item.get("title"),
+                            "kind": item.get("kind") or "song",
+                            "source_url": item.get("source_url"),
+                            "strategy": "playlist-track",
+                            "song_url": retry_url,
+                            "playlist_tags": dict(playlist_tags),
+                        }
+                    )
+                    retry_urls.append(retry_url)
+                    continue
+                if strategy == "url" and retry_url:
+                    dedupe_key = ("url", retry_url)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    retry_items.append(
+                        {
+                            "title": item.get("title"),
+                            "kind": item.get("kind"),
+                            "source_url": item.get("source_url"),
+                            "strategy": "url",
+                            "url": retry_url,
+                        }
+                    )
+                    retry_urls.append(retry_url)
+                    continue
+
+            retry_url = str(item.get("retry_url") or "").strip()
+            if retry_url:
+                dedupe_key = ("url", retry_url)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                retry_items.append(
+                    {
+                        "title": item.get("title"),
+                        "kind": item.get("kind"),
+                        "source_url": item.get("source_url"),
+                        "strategy": "url",
+                        "url": retry_url,
+                    }
+                )
+                retry_urls.append(retry_url)
+
+        if not retry_items:
+            self._send_json({"error": "当前任务没有可重试的失败歌曲。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            retry_job = self.server.job_manager.create_job(
+                {
+                    **job.payload,
+                    "url_text": "\n".join(retry_urls),
+                    "retry_items": retry_items,
+                }
+            )
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        self._send_json(
+            {
+                "ok": True,
+                "source_job_id": job.id,
+                "retry_count": len(retry_items),
+                "retry_job": retry_job.to_dict(),
+            },
+            HTTPStatus.CREATED,
+        )
+
 
 class WebGuiServer(ThreadingHTTPServer):
     def __init__(
@@ -830,6 +1013,7 @@ class WebGuiServer(ThreadingHTTPServer):
         self.file_picker = file_picker
         self.input_folder_picker = input_folder_picker
         self.file_actions = file_actions or DesktopFileActions()
+        self.api_request_token = secrets.token_urlsafe(32)
 
     def set_log_level(self, level: str) -> None:
         for logger_name in ("gamdl", "gamdl.app.auth", "gamdl.app.download", "gamdl.app.web"):
@@ -2287,7 +2471,7 @@ INDEX_HTML = """<!doctype html>
             <h1>Apple Music Downloader</h1>
           </div>
         </div>
-        <p>用于下载 Apple Music 歌曲、专辑和歌单。</p>
+        <p>用于下载 Apple Music 歌曲、专辑、歌单和艺术家内容。</p>
       </div>
       <nav class="nav">
         <button class="nav-btn active" data-page="download">下载</button>
@@ -2322,12 +2506,31 @@ INDEX_HTML = """<!doctype html>
               <button class="btn soft" id="preview-btn">预览链接</button>
             </div>
             <div class="section-body">
-              <p class="lead">支持歌曲、专辑和歌单。</p>
+              <p class="lead">支持歌曲、专辑、歌单和艺术家内容。</p>
               <div class="textarea-shell">
                 <div class="field">
                   <label for="url-input">Apple Music 链接</label>
                   <textarea id="url-input" placeholder="每行一个链接，或者直接粘贴多个链接"></textarea>
                 </div>
+              </div>
+              <div class="field" id="artist-download-field" hidden>
+                <label for="artist-auto-select">艺术家下载内容</label>
+                <select id="artist-auto-select" disabled>
+                  <option value="">请选择艺术家内容</option>
+                  <option value="top-songs">Top Songs</option>
+                  <option value="main-albums">Main Albums</option>
+                  <option value="singles-eps">Singles &amp; EPs</option>
+                  <option value="all-albums">All Albums</option>
+                </select>
+                <div class="muted" id="artist-download-copy">仅当链接里包含 Artist 时才需要选择。</div>
+              </div>
+              <div class="field">
+                <label for="save-playlist">歌单文件（.m3u8）</label>
+                <select id="save-playlist">
+                  <option value="false">不保存</option>
+                  <option value="true">保存</option>
+                </select>
+                <div class="muted">仅影响本次任务；开启后会为 playlist 下载写入或补齐 `.m3u8`。</div>
               </div>
               <div class="action-row">
                 <button class="btn primary" id="submit-job-btn">加入下载队列</button>
@@ -2650,7 +2853,7 @@ INDEX_HTML = """<!doctype html>
             <button class="btn" id="export-diagnostics-btn">导出诊断包</button>
           </div>
           <div class="card-body grid">
-            <p class="lead">用于下载 Apple Music 歌曲、专辑和歌单。</p>
+            <p class="lead">用于下载 Apple Music 歌曲、专辑、歌单和艺术家内容。</p>
             <div class="list" id="about-list"></div>
           </div>
         </article>
@@ -2659,10 +2862,12 @@ INDEX_HTML = """<!doctype html>
             <h3>ALAC / Wrapper 安装指南</h3>
             <div class="guide-links">
               <a class="btn soft" href="https://docs.docker.com/desktop/setup/install/mac-install/" target="_blank" rel="noreferrer">Docker 官方安装文档</a>
+              <a class="btn soft" href="https://github.com/WorldObservationLog/wrapper/releases" target="_blank" rel="noreferrer">Wrapper Releases</a>
               <a class="btn soft" href="https://github.com/WorldObservationLog/wrapper" target="_blank" rel="noreferrer">Wrapper 源码仓库</a>
             </div>
           </div>
           <div class="card-body">
+            <p class="muted">优先用 release 里的 zip 包，不建议普通用户直接 clone 源码。先按默认值照抄命令，先跑通再改。第一次安装时不要改容器名、不要改端口。</p>
             <div class="guide-steps">
               <div class="guide-step">
                 <strong>1. 先安装 Docker Desktop</strong>
@@ -2676,44 +2881,67 @@ softwareupdate --install-rosetta</pre>
                 <pre>docker version</pre>
               </div>
               <div class="guide-step">
-                <strong>3. 拉源码并构建 wrapper 镜像</strong>
-                <div class="muted">这一步会在本地生成一个可以复用的 wrapper 镜像。</div>
-                <pre>git clone https://github.com/WorldObservationLog/wrapper.git
-cd wrapper
-docker build -t wrapper-local .</pre>
+                <strong>3. 普通用户直接复制这一段：自动下载、解压、构建</strong>
+                <div class="muted">这一段会固定在 <code>~/wrapper-release</code> 目录里操作，不需要你自己理解当前目录。直接整段复制执行即可。为了减少 Apple Silicon 机器踩坑，这里默认直接带上 <code>--platform linux/amd64</code>。</div>
+                <pre>mkdir -p ~/wrapper-release && cd ~/wrapper-release
+rm -rf rootfs wrapper Dockerfile wrapper.zip
+curl -fsSL https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest \
+  | grep browser_download_url \
+  | grep 'Wrapper.x86_64.*\.zip' \
+  | cut -d '"' -f 4 \
+  | xargs -n 1 curl -L -o wrapper.zip
+unzip -o wrapper.zip
+docker build --platform linux/amd64 -t wrapper-local .</pre>
               </div>
               <div class="guide-step">
-                <strong>4. 首次登录 wrapper</strong>
-                <div class="muted">把下面命令里的 <code>your_apple_id@example.com:your_password</code> 改成你自己的 Apple Music 账号。出现 2FA 时按终端提示完成，看到 <code>response type 6</code> 再结束。</div>
+                <strong>4. 如果上一步失败，再执行诊断</strong>
+                <div class="muted">只有在第 3 步失败时才需要看这里。主要用来确认 release 包有没有完整下载和解压。</div>
+                <pre>
+pwd
+ls -l
+test -f ./wrapper && echo "wrapper ok" || echo "wrapper missing"
+test -d ./rootfs && echo "rootfs ok" || echo "rootfs missing"
+test -f ./Dockerfile && echo "dockerfile ok" || echo "dockerfile missing"
+ls -l wrapper.zip</pre>
+              </div>
+              <div class="guide-step">
+                <strong>5. 首次登录 wrapper</strong>
+                <div class="muted">把下面命令里的 <code>your_apple_id@example.com:your_password</code> 改成你自己的 Apple Music 账号。这个命令会把账号口令暴露在 shell history 和进程列表里，建议只在临时 shell 里执行。这里默认直接带上 <code>--platform linux/amd64</code>。出现 2FA 时按终端提示完成，看到 <code>response type 6</code> 再结束。</div>
                 <pre>docker run --rm -it \
+  --platform linux/amd64 \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
-  -e args="-L your_apple_id@example.com:your_password -F -H 0.0.0.0 -D 10022 -M 20022 -A 30022" \
+  -e args="-L your_apple_id@example.com:your_password -F -H 0.0.0.0 -D 10022 -M 20022" \
   wrapper-local</pre>
               </div>
               <div class="guide-step">
-                <strong>5. 创建长期运行的 wrapper 容器</strong>
-                <div class="muted">容器名请保持 <code>wrapper-latest-10022</code>。这样 App 才能自动识别，并在 Docker 已启动时帮你自动拉起。</div>
+                <strong>6. 创建长期运行的 wrapper 容器</strong>
+                <div class="muted">容器名请保持 <code>wrapper-latest-10022</code>。这样 App 才能自动识别，并在 Docker 已启动时帮你自动拉起。这里不要映射 account 端口；wrapper 在容器里仍监听 <code>0.0.0.0</code>，但宿主机端口只绑定到 <code>127.0.0.1</code>。这里默认直接带上 <code>--platform linux/amd64</code>。</div>
                 <pre>docker run -d \
+  --platform linux/amd64 \
   --name wrapper-latest-10022 \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
-  -p 10022:10022 \
-  -p 20022:20022 \
-  -p 30022:30022 \
-  -e args="-H 0.0.0.0 -D 10022 -M 20022 -A 30022" \
+  -p 127.0.0.1:10022:10022 \
+  -p 127.0.0.1:20022:20022 \
+  -e args="-H 0.0.0.0 -D 10022 -M 20022" \
   wrapper-local</pre>
               </div>
               <div class="guide-step">
-                <strong>6. 自检端口，然后回到 App 切 ALAC</strong>
-                <div class="muted">如果 10022 和 20022 都能连通，App 里把音质切到 ALAC，并保持解密地址为 <code>127.0.0.1:10022</code>。</div>
+                <strong>7. 自检端口，然后回到 App 切 ALAC</strong>
+                <div class="muted">如果 10022 和 20022 都能连通，App 里把音质切到 ALAC，并保持解密地址为 <code>127.0.0.1:10022</code>。如果容器存在但端口不通，先看日志，不要急着重装。</div>
                 <pre>docker ps --filter name=wrapper-latest-10022
 nc -vz 127.0.0.1 10022
-nc -vz 127.0.0.1 20022</pre>
+nc -vz 127.0.0.1 20022
+docker logs --tail 30 wrapper-latest-10022</pre>
               </div>
               <div class="guide-step">
-                <strong>7. 以后怎么启动</strong>
+                <strong>8. 以后怎么启动</strong>
                 <div class="muted">以后只要 Docker Desktop 已经打开，App 会优先检测现有端口，也会尝试启动这个容器。手动命令只需要这两个：</div>
                 <pre>docker start wrapper-latest-10022
 docker stop wrapper-latest-10022</pre>
+              </div>
+              <div class="guide-step">
+                <strong>9. 常见报错先看这里</strong>
+                <div class="muted"><code>无法启用 Rosetta 2</code> 或镜像架构不匹配：回到第 3、5、6 步，确认命令里保留了 <code>--platform linux/amd64</code>。<code>COPY ./wrapper /app: not found</code>：说明当前 release 解压目录不完整，先回到第 3、4 步重新下载并检查。<code>127.0.0.1:10022 connection refused</code>：说明容器没在运行，先执行 <code>docker start wrapper-latest-10022</code>，再回到第 7 步检查。如果 release 包下载失败，再回退到源码仓库方案。</div>
               </div>
             </div>
           </div>
@@ -2731,6 +2959,8 @@ docker stop wrapper-latest-10022</pre>
   <div class="toast" id="toast"></div>
 
   <script>
+    const API_REQUEST_TOKEN = '__GAMDL_API_REQUEST_TOKEN__';
+
     const state = {
       jobs: [],
       openWithMenuJobId: null,
@@ -2740,6 +2970,7 @@ docker stop wrapper-latest-10022</pre>
       settings: null,
       runtime: null,
       wrapperStatus: null,
+      preview: [],
       logs: {},
       logFolderPath: '',
       currentLogChannel: 'app',
@@ -2756,9 +2987,12 @@ docker stop wrapper-latest-10022</pre>
     };
 
     async function api(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set('Content-Type', 'application/json');
+      headers.set('X-Gamdl-Request-Token', API_REQUEST_TOKEN);
       const response = await fetch(path, {
-        headers: { 'Content-Type': 'application/json' },
         ...options,
+        headers,
       });
       const data = await response.json();
       if (!response.ok) {
@@ -3075,9 +3309,11 @@ docker stop wrapper-latest-10022</pre>
     }
 
     function renderPreview(data) {
+      state.preview = data.preview || [];
       const summary = document.getElementById('preview-summary');
       summary.textContent = `${data.count} 个链接，${Object.entries(data.summary).map(([kind, count]) => `${kind} ${count}`).join(' / ') || '无'}`;
       const container = document.getElementById('preview-list');
+      syncArtistDownloadOptions(state.preview);
       if (!data.preview.length) {
         container.innerHTML = '<div class="empty-state">显示链接类型和支持状态。</div>';
         return;
@@ -3121,10 +3357,18 @@ docker stop wrapper-latest-10022</pre>
         const result = job.result || {};
         const isConvert = job.kind === 'convert';
         const latestMediaPath = result.latest_media_path || '';
+        const failedItems = Array.isArray(result.failed_items) ? result.failed_items : [];
+        const retryableFailedItems = failedItems.filter((item) => Boolean(item?.retry_url));
+        const failedSummary = failedItems.length
+          ? `<div class="muted">失败项：${failedItems.slice(0, 3).map((item) => escapeHtml(item.title || item.source_url || 'Unknown')).join(' / ')}${failedItems.length > 3 ? ' / …' : ''}</div>`
+          : '';
         const supportsFileActions = Boolean(state.runtime?.file_actions_supported);
         const canShowOutputAction = supportsFileActions && Boolean(job.payload?.output_path);
         const canShowMediaActions = supportsFileActions && Boolean(latestMediaPath);
         const errorCount = typeof result.errors === 'number' ? result.errors : (job.error_message ? 1 : 0);
+        const retryActions = !isConvert && retryableFailedItems.length
+          ? `<button class="btn soft" onclick="retryFailedItems('${job.id}')">重试失败歌曲（${retryableFailedItems.length}）</button>`
+          : '';
         const fileActionHint = latestMediaPath
           ? `<div class="muted">最近成功文件：${escapeHtml(latestMediaPath)}</div>`
           : `<div class="muted">当前${isConvert ? '转换' : '下载'}任务没有成功输出的媒体文件。</div>`;
@@ -3185,7 +3429,9 @@ docker stop wrapper-latest-10022</pre>
             <div class="inline">
               ${summaryBadges}
               ${actions}
+              ${retryActions}
             </div>
+            ${failedSummary}
             ${fileActions}
             <div class="log-scroll-panel job-log-scroll">
               <pre>${escapeHtml((job.logs || []).slice(-10).join('\\n') || '暂无日志')}</pre>
@@ -3300,6 +3546,34 @@ docker stop wrapper-latest-10022</pre>
       syncDownloadWorkspace();
     }
 
+    function syncArtistDownloadOptions(preview = []) {
+      const field = document.getElementById('artist-download-field');
+      const select = document.getElementById('artist-auto-select');
+      const copy = document.getElementById('artist-download-copy');
+      if (!field || !select || !copy) return;
+      const hasArtist = preview.some((item) => item.kind === 'artist' && item.valid);
+      field.hidden = !hasArtist;
+      select.disabled = !hasArtist;
+      copy.textContent = hasArtist
+        ? '检测到 Artist 链接；本次任务里的所有 Artist 链接会共用这一下载内容。'
+        : '仅当链接里包含 Artist 时才需要选择。';
+      if (!hasArtist) {
+        select.value = '';
+      }
+    }
+
+    function syncArtistDownloadOptionsFromInput() {
+      const input = document.getElementById('url-input');
+      if (!input) return;
+      const tokens = input.value.split(/\s+/).filter(Boolean);
+      const hasArtist = tokens.some((url) => url.includes('music.apple.com') && url.includes('/artist/'));
+      if (hasArtist) {
+        syncArtistDownloadOptions([{ kind: 'artist', valid: true }]);
+        return;
+      }
+      syncArtistDownloadOptions([]);
+    }
+
     function renderRuntime(runtime) {
       state.runtime = runtime;
       if (!runtime) return;
@@ -3391,6 +3665,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('overwrite').value = String(settings.overwrite);
       document.getElementById('use-wrapper').value = String(settings.use_wrapper);
       document.getElementById('wrapper-decrypt-ip').value = settings.wrapper_decrypt_ip || DEFAULT_WRAPPER_DECRYPT_IP;
+      document.getElementById('artist-auto-select').value = settings.artist_auto_select || '';
       document.getElementById('open-file-application').value = settings.open_file_application || '';
       document.getElementById('browser-import-enabled').value = String(settings.browser_import_enabled);
       const browserImportButtons = [
@@ -3411,6 +3686,7 @@ docker stop wrapper-latest-10022</pre>
       syncDownloadWorkspace();
       renderRuntime(runtime);
       renderWrapperStatus(wrapperStatus);
+      syncArtistDownloadOptions(state.preview || []);
       syncSetupOverlay();
     }
 
@@ -3495,6 +3771,7 @@ docker stop wrapper-latest-10022</pre>
         throw new Error('当前所选音质需要启用外部 wrapper。请先打开“启用 wrapper”，或切回 AAC。');
       }
       const payload = collectSettingsPayload();
+      payload.save_playlist = document.getElementById('save-playlist').value === 'true';
       payload.url_text = document.getElementById('url-input').value;
       const data = await api('/api/jobs', {
         method: 'POST',
@@ -3694,12 +3971,21 @@ docker stop wrapper-latest-10022</pre>
     }
     window.revealJobFile = revealJobFile;
 
+    async function retryFailedItems(jobId) {
+      const data = await api(`/api/jobs/${jobId}/retry-failed`, { method: 'POST', body: '{}' });
+      showToast(`已将 ${data.retry_count} 个失败项重新加入队列`);
+      await refreshJobs();
+      activatePage('jobs');
+    }
+    window.retryFailedItems = retryFailedItems;
+
     function collectSettingsPayload() {
       return {
         output_path: document.getElementById('output-path').value.trim(),
         log_level: document.getElementById('log-level').value,
         save_cover: document.getElementById('save-cover').value === 'true',
         song_codec: document.getElementById('song-codec').value,
+        artist_auto_select: document.getElementById('artist-auto-select').value,
         theme: document.getElementById('theme-select').value,
         overwrite: document.getElementById('overwrite').value === 'true',
         use_wrapper: document.getElementById('use-wrapper').value === 'true',
@@ -3904,6 +4190,7 @@ docker stop wrapper-latest-10022</pre>
       document.querySelectorAll('.nav-btn').forEach((button) => {
         button.addEventListener('click', () => activatePage(button.dataset.page));
       });
+      document.getElementById('url-input').addEventListener('input', syncArtistDownloadOptionsFromInput);
       document.getElementById('preview-btn').addEventListener('click', () => runAction(previewLinks));
       document.getElementById('submit-job-btn').addEventListener('click', () => runAction(submitJob));
       document.getElementById('submit-convert-btn').addEventListener('click', () => runAction(submitConvertJob));

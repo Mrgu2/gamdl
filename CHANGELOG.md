@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- 新增 `docs/backdoor-audit-2026-03-30.md`，记录对仓库与 `wrapper-main.zip` 的后门审计结论：未发现明确隐藏后门，但确认 wrapper 账户接口存在未鉴权令牌暴露风险
+- 放宽 wrapper Docker 探测 / 启动命令超时，避免 Docker Desktop 稍慢时把可用环境误判成不可用
+- 桌面版正式开放 artist 链接：下载页不再把 `Artist` 标记成 unsupported，并新增 `Top Songs / Main Albums / Singles & EPs / All Albums` 选择
+- 下载任务会记录可重试的失败歌曲，任务页新增“重试失败歌曲”入口，并收敛为只重试歌曲级失败项
+- artist 下载选项改为任务级输入，不再被静默持久化成全局默认值
+- 对“整专中个别单曲失败”的补漏场景补回 fallback：拿不到单曲直链时，会回退到原始专辑链接并依赖跳过机制补齐，同时避免 artist / playlist 误重跑整个集合
+- playlist 上下文里的失败歌曲现在会保留 `playlist_tags` 并按“歌单成员重试”执行，补漏时可继续写回 `.m3u8` 轨序，而不是退化成普通单曲下载
+- 修复 playlist retry 的两条主路径回归：GUI 任务提交流程现在可显式开启 `.m3u8` 写回，且 `album?...i=<songId>` 形式的常见单曲链接会按 song 正确重试
+- 调整下载后处理时序：只有媒体文件成功落盘后才会写 `.m3u8`、封面和歌词；对“文件已存在而跳过”的场景仍保留补齐歌单文件的能力
+- sidecar 写入失败现在降级为 warning，不再把已成功落盘的媒体误报成失败，也不会覆盖 `MediaFileExists` 的跳过语义
+- sidecar warning 现在会进入任务日志，并以可重试的 warning 形式记录到任务结果里，避免“界面显示成功但用户完全看不到封面/歌词/歌单文件失败”
+- 更新 README 和 App 内置 wrapper 指南：在 Apple Silicon 场景的 Docker 命令中明确补充 `--platform linux/amd64` 兼容提示
+- 收紧桌面版本地 Web API：POST 请求现在必须带本地随机令牌且限定 `application/json`，降低 localhost CSRF 和跨站状态修改风险
+- 收紧桌面版 wrapper 使用面：设置层仅接受本机回环地址，文档和内置指南不再建议 `0.0.0.0` / `30022` 暴露账户接口
+- 修正 token 存储策略：keyring 写入成功时不再额外落盘 `.token` 明文副本
+- token fallback 改为“跨进程兜底 + 成功读 keyring 后自动清理”，避免应用重启后遇到瞬时 keyring 读失败就直接丢会话
+- wrapper 端口探测现在同时支持 IPv4 / IPv6 loopback，避免 `::1` 之类配置可保存但永远连不上
+- wrapper 地址校验现在会拒绝 `55535` 以上的解密端口，避免派生出的 m3u8 端口越界成不可能工作的配置
+- 补齐失败重试语义：album / artist / playlist 等集合链接在 URL 级失败或缺少 song URL 时会保留父链接作为重试目标
+- 修复下载页 artist 选项的输入联动：当文本框里不再包含 artist 链接时，会立即隐藏并清空该选择器，不再残留过期 UI 状态
+
 ## 1.0.7 - 2026-03-27
 
 - 补齐桌面 Web UI 多项回归修正：日志页新增“打开日志目录”，应用日志和任务日志加入稳定滚动容器，刷新时保持贴底并避免清空用户选区

@@ -32,6 +32,20 @@ class _BrokenKeyring:
             raise self.delete_error
 
 
+class _WorkingKeyring:
+    def __init__(self) -> None:
+        self.values = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.values.get((service, username))
+
+    def set_password(self, service: str, username: str, token: str) -> None:
+        self.values[(service, username)] = token
+
+    def delete_password(self, service: str, username: str) -> None:
+        self.values.pop((service, username), None)
+
+
 class TokenStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -58,6 +72,63 @@ class TokenStoreTests(unittest.TestCase):
             "written-token",
         )
 
+    def test_set_keeps_token_out_of_fallback_file_when_keyring_write_succeeds(self):
+        working_keyring = _WorkingKeyring()
+        self.store._keyring = lambda: working_keyring  # type: ignore[method-assign]
+
+        self.store.set("written-token")
+
+        token = self.store.get()
+
+        self.assertEqual(token, "written-token")
+        self.assertEqual(
+            working_keyring.get_password("gamdl.desktop", "media-user-token"),
+            "written-token",
+        )
+        self.assertFalse(self.paths.token_fallback_path.exists())
+
+    def test_get_returns_cached_token_when_keyring_read_temporarily_fails(self):
+        class _ReadFailKeyring(_WorkingKeyring):
+            def get_password(self, service: str, username: str) -> str | None:
+                raise RuntimeError("boom-read")
+
+        working_keyring = _WorkingKeyring()
+        self.store._keyring = lambda: working_keyring  # type: ignore[method-assign]
+        self.store.set("written-token")
+        self.store._keyring = lambda: _ReadFailKeyring()  # type: ignore[method-assign]
+
+        token = self.store.get()
+
+        self.assertEqual(token, "written-token")
+        self.assertTrue(self.paths.token_fallback_path.exists())
+
+    def test_get_reads_ephemeral_fallback_after_restart_when_keyring_read_fails(self):
+        class _ReadFailKeyring(_WorkingKeyring):
+            def get_password(self, service: str, username: str) -> str | None:
+                raise RuntimeError("boom-read")
+
+        working_keyring = _WorkingKeyring()
+        self.store._keyring = lambda: working_keyring  # type: ignore[method-assign]
+        self.store.set("written-token")
+
+        restarted_store = TokenStore(self.paths)
+        restarted_store._keyring = lambda: _ReadFailKeyring()  # type: ignore[method-assign]
+
+        token = restarted_store.get()
+
+        self.assertEqual(token, "written-token")
+        self.assertTrue(self.paths.token_fallback_path.exists())
+
+    def test_set_writes_fallback_file_when_keyring_is_unavailable(self):
+        self.store._keyring = lambda: None  # type: ignore[method-assign]
+
+        self.store.set("written-token")
+
+        self.assertEqual(
+            self.paths.token_fallback_path.read_text(encoding="utf-8"),
+            "written-token",
+        )
+
     def test_delete_removes_fallback_file_when_keyring_delete_raises(self):
         self.paths.ensure()
         self.paths.token_fallback_path.write_text("fallback-token", encoding="utf-8")
@@ -66,6 +137,7 @@ class TokenStoreTests(unittest.TestCase):
         self.store.delete()
 
         self.assertFalse(self.paths.token_fallback_path.exists())
+        self.assertIsNone(self.store.get())
 
 
 if __name__ == "__main__":

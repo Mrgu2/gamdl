@@ -16,7 +16,7 @@
 `Gamdl Desktop Fork 1.0.7` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
-- 默认覆盖最常用场景：歌曲、专辑、歌单下载
+- 默认覆盖最常用场景：歌曲、专辑、歌单、艺术家下载
 - 支持本地 FFmpeg 转换页面，面向实际整理音乐库
 - 保留上游 CLI 能力，方便高级用户继续脚本化使用
 
@@ -53,12 +53,14 @@
 
 ### 下载
 
-- 下载歌曲、专辑、歌单
+- 下载歌曲、专辑、歌单、艺术家
 - 支持浏览器辅助登录
 - 支持导入浏览器登录态
 - 统一任务队列与日志页面
 - 默认 AAC 可直接使用
 - `ALAC / 杜比全景声` 继续走外部 wrapper
+- 艺术家链接首版支持 `Top Songs / Main Albums / Singles / EPs / All Albums`
+- 下载结束后支持对失败歌曲发起重试
 
 ### 转换
 
@@ -119,8 +121,11 @@ Windows 包说明：
 
 1. 先使用浏览器辅助登录，或导入已登录浏览器的登录态
 2. 粘贴一个或多个支持的链接
-3. 确认输出目录和下载设置
-4. 加入任务队列并在 `任务` 页面查看进度
+3. 如果包含艺术家链接，先选择要展开下载的艺术家内容
+4. 确认输出目录和下载设置
+5. 加入任务队列并在 `任务` 页面查看进度
+
+如果任务里有失败歌曲，`任务` 页面会提供“重试失败歌曲”入口，避免手动回去重新找原始链接。
 
 ### 转换页面
 
@@ -172,6 +177,88 @@ dist/*-x86_64.dmg
 uv sync --extra desktop-build
 uv run python -m unittest discover -s tests
 uv run pyinstaller --noconfirm "<Windows spec 文件>"
+```
+
+## ALAC / Wrapper 快速说明
+
+如果你要启用 `ALAC / 杜比全景声`，桌面版仍然依赖外部 wrapper。
+
+首次安装时建议优先使用 [wrapper releases](https://github.com/WorldObservationLog/wrapper/releases) 里的 zip 包，不建议普通用户直接 clone 源码。先跑通再改，不要先改容器名、端口或目录。为了减少 Apple Silicon 机器踩坑，下面的构建和运行命令默认都直接带上 `--platform linux/amd64`。
+
+普通用户直接复制这一段即可：
+
+```bash
+mkdir -p ~/wrapper-release && cd ~/wrapper-release
+rm -rf rootfs wrapper Dockerfile wrapper.zip
+curl -fsSL https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest \
+  | grep browser_download_url \
+  | grep 'Wrapper.x86_64.*\.zip' \
+  | cut -d '"' -f 4 \
+  | xargs -n 1 curl -L -o wrapper.zip
+unzip -o wrapper.zip
+docker build --platform linux/amd64 -t wrapper-local .
+```
+
+如果上面失败，再执行诊断：
+
+```bash
+pwd
+ls -l
+test -f ./wrapper && echo "wrapper ok" || echo "wrapper missing"
+test -d ./rootfs && echo "rootfs ok" || echo "rootfs missing"
+test -f ./Dockerfile && echo "dockerfile ok" || echo "dockerfile missing"
+ls -l wrapper.zip
+```
+
+如果这里出现 `wrapper missing`、`rootfs missing`、`dockerfile missing`、`wrapper.zip` 不存在，或者 `COPY ./wrapper /app: not found`，不要继续往后跑。先重新执行上面的自动下载命令。
+
+首次登录示例：
+
+注意：wrapper 当前的账号登录参数会把 Apple ID 凭据暴露在 shell history 和进程列表里。尽量只在临时 shell 里执行，不要把这条命令长期留在共享机器的历史记录中。
+
+```bash
+docker run --rm -it \
+  --platform linux/amd64 \
+  -v "$PWD/rootfs/data:/app/rootfs/data" \
+  -e args="-L your_apple_id@example.com:your_password -F -H 0.0.0.0 -D 10022 -M 20022" \
+  wrapper-local
+```
+
+长期运行示例：
+
+注意：不要映射 wrapper 的 account 端口。wrapper 在容器里仍需要监听 `0.0.0.0`，但宿主机端口只绑定到 `127.0.0.1`，这样桌面版可访问，局域网其他主机不可访问。
+
+```bash
+docker run -d \
+  --platform linux/amd64 \
+  --name wrapper-latest-10022 \
+  -v "$PWD/rootfs/data:/app/rootfs/data" \
+  -p 127.0.0.1:10022:10022 \
+  -p 127.0.0.1:20022:20022 \
+  -e args="-H 0.0.0.0 -D 10022 -M 20022" \
+  wrapper-local
+```
+
+启动后自检：
+
+```bash
+docker ps --filter name=wrapper-latest-10022
+nc -vz 127.0.0.1 10022
+nc -vz 127.0.0.1 20022
+docker logs --tail 30 wrapper-latest-10022
+```
+
+常见报错：
+
+- `无法启用 Rosetta 2` / 镜像架构不匹配：确认运行命令里保留了 `--platform linux/amd64`
+- `COPY ./wrapper /app: not found`：当前 release 解压目录不完整，先回到构建前自检
+- `127.0.0.1:10022 connection refused`：wrapper 容器没在运行，先执行 `docker start wrapper-latest-10022`
+
+如果 release 包下载失败，再回退到源码仓库方案：
+
+```bash
+git clone https://github.com/WorldObservationLog/wrapper.git
+cd wrapper
 ```
 
 ## 开发与验证

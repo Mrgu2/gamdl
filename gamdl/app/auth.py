@@ -63,6 +63,7 @@ class SessionStatus:
 class TokenStore:
     def __init__(self, paths: AppPaths) -> None:
         self.paths = paths
+        self._cached_token: str | None = None
 
     def _keyring(self):
         try:
@@ -74,31 +75,51 @@ class TokenStore:
     def _log_keyring_error(self, action: str, exc: Exception) -> None:
         logger.warning("Keyring %s failed, falling back to token file: %s", action, exc)
 
+    def _write_fallback_token(self, token: str) -> None:
+        self.paths.ensure()
+        self.paths.token_fallback_path.write_text(token, encoding="utf-8")
+        try:
+            self.paths.token_fallback_path.chmod(0o600)
+        except OSError:
+            logger.debug("Unable to tighten fallback token permissions", exc_info=True)
+
     def get(self) -> str | None:
         keyring = self._keyring()
         if keyring:
             try:
                 token = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
             except Exception as exc:
-                self._log_keyring_error("read", exc)
+                logger.warning("Keyring read failed, falling back to cached token or token file: %s", exc)
+                if self._cached_token:
+                    return self._cached_token
             else:
                 if token:
+                    self._cached_token = token
+                    self.paths.token_fallback_path.unlink(missing_ok=True)
                     return token
         if self.paths.token_fallback_path.exists():
-            return self.paths.token_fallback_path.read_text(encoding="utf-8").strip()
-        return None
+            token = self.paths.token_fallback_path.read_text(encoding="utf-8").strip()
+            self._cached_token = token
+            return token
+        return self._cached_token
 
     def set(self, token: str) -> None:
+        self._cached_token = token
+        wrote_to_keyring = False
         keyring = self._keyring()
         if keyring:
             try:
                 keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
+                wrote_to_keyring = True
             except Exception as exc:
                 self._log_keyring_error("write", exc)
-        self.paths.ensure()
-        self.paths.token_fallback_path.write_text(token, encoding="utf-8")
+        if wrote_to_keyring:
+            self._write_fallback_token(token)
+            return
+        self._write_fallback_token(token)
 
     def delete(self) -> None:
+        self._cached_token = None
         keyring = self._keyring()
         if keyring:
             try:

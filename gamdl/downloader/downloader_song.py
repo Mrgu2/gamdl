@@ -3,7 +3,7 @@ from pathlib import Path
 from ..api.exceptions import ApiError
 from ..interface.enums import CoverFormat, SongCodec, SyncedLyricsFormat
 from ..interface.interface_song import AppleMusicSongInterface
-from ..interface.types import DecryptionKeyAv
+from ..interface.types import DecryptionKeyAv, PlaylistTags
 from .amdecrypt import decrypt_file, decrypt_file_hex
 from .downloader_base import AppleMusicBaseDownloader
 from .exceptions import ExperimentalCodecRequiresWrapper, FormatNotAvailable
@@ -35,6 +35,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         self,
         song_metadata: dict,
         playlist_metadata: dict = None,
+        playlist_tags_override: PlaylistTags | None = None,
     ) -> DownloadItem:
         download_item = DownloadItem()
 
@@ -59,7 +60,12 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
                 song_metadata,
             )
 
-        if playlist_metadata:
+        if playlist_tags_override:
+            download_item.playlist_tags = playlist_tags_override
+            download_item.playlist_file_path = self.get_playlist_file_path(
+                download_item.playlist_tags,
+            )
+        elif playlist_metadata:
             download_item.playlist_tags = self.get_playlist_tags(
                 playlist_metadata,
                 song_metadata,

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..interface.types import (
@@ -28,6 +28,7 @@ class DownloadItem:
     playlist_file_path: str = None
     synced_lyrics_path: str = None
     cover_path: str = None
+    sidecar_failures: list[dict[str, str | None]] = field(default_factory=list)
     flat_filter_result: Any = None
     error: Exception = None
 

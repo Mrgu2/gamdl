@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import typing
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from .exceptions import (
     UnsupportedMediaType,
 )
 from .types import DownloadItem, UrlInfo
+
+logger = logging.getLogger("gamdl.downloader")
 
 
 class AppleMusicDownloader:
@@ -487,7 +490,13 @@ class AppleMusicDownloader:
             if download_item.error:
                 raise download_item.error
 
-            await self._initial_processing(download_item)
+            if self._should_skip_existing_media(download_item):
+                await self._write_post_download_artifacts(
+                    download_item,
+                    media_file_exists=True,
+                )
+                raise MediaFileExists(download_item.final_path)
+
             await self._download(download_item)
             await self._final_processing(download_item)
 
@@ -508,12 +517,6 @@ class AppleMusicDownloader:
 
         if self.song_downloader.synced_lyrics_only:
             return
-
-        if (
-            Path(download_item.final_path).exists()
-            and not self.base_downloader.overwrite
-        ):
-            raise MediaFileExists(download_item.final_path)
 
         if (
             self.base_downloader.download_mode == DownloadMode.NM3U8DLRE
@@ -564,44 +567,116 @@ class AppleMusicDownloader:
         if download_item.media_metadata["type"] in UPLOADED_VIDEO_MEDIA_TYPE:
             await self.uploaded_video_downloader.download(download_item)
 
-    async def _initial_processing(
+    def _should_skip_existing_media(
         self,
         download_item: DownloadItem,
+    ) -> bool:
+        return (
+            not self.song_downloader.synced_lyrics_only
+            and bool(download_item.final_path)
+            and Path(download_item.final_path).exists()
+            and not self.base_downloader.overwrite
+        )
+
+    async def _write_post_download_artifacts(
+        self,
+        download_item: DownloadItem,
+        *,
+        media_file_exists: bool | None = None,
     ) -> None:
         if self.skip_processing:
             return
 
-        if download_item.cover_path and self.base_downloader.save_cover:
-            cover_bytes = await self.interface.get_cover_bytes(download_item.cover_url)
-            if cover_bytes and (
-                self.base_downloader.overwrite
-                or not Path(download_item.cover_path).exists()
-            ):
-                self.base_downloader.write_cover_image(
-                    cover_bytes,
-                    download_item.cover_path,
+        final_path_exists = (
+            media_file_exists
+            if media_file_exists is not None
+            else bool(download_item.final_path and Path(download_item.final_path).exists())
+        )
+        allow_sidecars_without_media = self.song_downloader.synced_lyrics_only
+
+        if (
+            download_item.cover_path
+            and self.base_downloader.save_cover
+            and (final_path_exists or allow_sidecars_without_media)
+        ):
+            try:
+                cover_bytes = await self.interface.get_cover_bytes(download_item.cover_url)
+                if cover_bytes and (
+                    self.base_downloader.overwrite
+                    or not Path(download_item.cover_path).exists()
+                ):
+                    self.base_downloader.write_cover_image(
+                        cover_bytes,
+                        download_item.cover_path,
+                    )
+            except Exception as exc:
+                self._log_post_download_artifact_warning(
+                    download_item,
+                    "cover",
+                    exc,
                 )
 
         if (
             download_item.lyrics
             and download_item.lyrics.synced
             and not self.song_downloader.no_synced_lyrics
+            and (final_path_exists or allow_sidecars_without_media)
             and (
                 self.base_downloader.overwrite
                 or not Path(download_item.synced_lyrics_path).exists()
             )
         ):
-            self.song_downloader.write_synced_lyrics(
-                download_item.lyrics.synced,
-                download_item.synced_lyrics_path,
-            )
+            try:
+                self.song_downloader.write_synced_lyrics(
+                    download_item.lyrics.synced,
+                    download_item.synced_lyrics_path,
+                )
+            except Exception as exc:
+                self._log_post_download_artifact_warning(
+                    download_item,
+                    "synced-lyrics",
+                    exc,
+                )
 
-        if download_item.playlist_tags and self.base_downloader.save_playlist:
-            self.base_downloader.update_playlist_file(
-                download_item.playlist_file_path,
-                download_item.final_path,
-                download_item.playlist_tags.playlist_track,
-            )
+        if (
+            download_item.playlist_tags
+            and self.base_downloader.save_playlist
+            and final_path_exists
+        ):
+            try:
+                self.base_downloader.update_playlist_file(
+                    download_item.playlist_file_path,
+                    download_item.final_path,
+                    download_item.playlist_tags.playlist_track,
+                )
+            except Exception as exc:
+                self._log_post_download_artifact_warning(
+                    download_item,
+                    "playlist-file",
+                    exc,
+                )
+
+    def _log_post_download_artifact_warning(
+        self,
+        download_item: DownloadItem,
+        artifact_kind: str,
+        error: Exception,
+    ) -> None:
+        metadata = getattr(download_item, "media_metadata", None) or {}
+        attributes = metadata.get("attributes", {}) or {}
+        title = attributes.get("name") or metadata.get("id") or "unknown media"
+        download_item.sidecar_failures.append(
+            {
+                "artifact_kind": artifact_kind,
+                "error": str(error),
+            }
+        )
+        logger.warning(
+            'Post-download artifact "%s" failed for "%s": %s',
+            artifact_kind,
+            title,
+            error,
+        )
 
     async def _final_processing(
         self,
@@ -615,3 +690,5 @@ class AppleMusicDownloader:
                 download_item.staged_path,
                 download_item.final_path,
             )
+
+        await self._write_post_download_artifacts(download_item)

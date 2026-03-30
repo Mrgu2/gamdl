@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 import uuid
 
 from .paths import AppPaths
-from .wrapper_manager import default_wrapper_decrypt_ip, normalize_wrapper_decrypt_ip
+from .wrapper_manager import (
+    default_wrapper_decrypt_ip,
+    normalize_wrapper_decrypt_ip,
+    parse_wrapper_decrypt_ip,
+)
 
 ALLOWED_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 ALLOWED_SONG_CODECS = {"aac-legacy", "aac", "alac", "atmos"}
@@ -31,8 +36,9 @@ CLEARABLE_STRING_KEYS = {"open_file_application"}
 ALLOWED_THEMES = {"warm", "cool"}
 DEFAULT_WRAPPER_DECRYPT_IP = default_wrapper_decrypt_ip()
 WRAPPER_DECRYPT_IP_ERROR = (
-    "Wrapper 解密地址格式无效，请使用类似 127.0.0.1:10022 的地址，或仅填写端口号。"
+    "Wrapper 解密地址格式无效，请使用类似 127.0.0.1:10022 的地址，或填写 1 到 55535 之间的端口号。"
 )
+WRAPPER_LOCALHOST_ONLY_ERROR = "桌面版 wrapper 地址必须是本机回环地址，例如 127.0.0.1:10022。"
 
 
 @dataclass
@@ -49,6 +55,7 @@ class AppSettings:
     theme: str = "warm"
     use_wrapper: bool = False
     wrapper_decrypt_ip: str = DEFAULT_WRAPPER_DECRYPT_IP
+    artist_auto_select: str = ""
 
 
 class AppSettingsStore:
@@ -104,12 +111,26 @@ class AppSettingsStore:
             sanitized.pop("theme")
         if "wrapper_decrypt_ip" in sanitized:
             try:
-                sanitized["wrapper_decrypt_ip"] = normalize_wrapper_decrypt_ip(
+                sanitized["wrapper_decrypt_ip"] = self._validate_wrapper_decrypt_ip(
                     sanitized["wrapper_decrypt_ip"]
                 )
             except ValueError:
                 sanitized.pop("wrapper_decrypt_ip")
         return sanitized
+
+    @staticmethod
+    def _validate_wrapper_decrypt_ip(wrapper_decrypt_ip: str) -> str:
+        normalized = normalize_wrapper_decrypt_ip(wrapper_decrypt_ip)
+        host, _port = parse_wrapper_decrypt_ip(normalized)
+        if host.lower() == "localhost":
+            return normalized
+        try:
+            parsed_host = ip_address(host)
+        except ValueError as exc:
+            raise ValueError(WRAPPER_LOCALHOST_ONLY_ERROR) from exc
+        if not parsed_host.is_loopback:
+            raise ValueError(WRAPPER_LOCALHOST_ONLY_ERROR)
+        return normalized
 
     def load(self) -> AppSettings:
         defaults = self.defaults()
@@ -131,8 +152,11 @@ class AppSettingsStore:
             wrapper_decrypt_ip = payload["wrapper_decrypt_ip"].strip()
             if wrapper_decrypt_ip:
                 try:
-                    normalize_wrapper_decrypt_ip(wrapper_decrypt_ip)
+                    self._validate_wrapper_decrypt_ip(wrapper_decrypt_ip)
                 except ValueError as exc:
+                    message = str(exc)
+                    if message == WRAPPER_LOCALHOST_ONLY_ERROR:
+                        raise ValueError(message) from exc
                     raise ValueError(WRAPPER_DECRYPT_IP_ERROR) from exc
 
         settings = asdict(self.load())

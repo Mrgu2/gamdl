@@ -7,6 +7,8 @@ __pycache__
 !pyproject.toml
 !README.md
 !CHANGELOG.md
+!docs/
+!docs/*.md
 !uv.lock
 !.github/
 !.github/workflows/

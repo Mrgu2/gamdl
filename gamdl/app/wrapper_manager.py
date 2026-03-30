@@ -16,6 +16,9 @@ logger = logging.getLogger("gamdl.app.wrapper")
 WRAPPER_NAME_RE = re.compile(r"^wrapper-latest-(\d+)$")
 DEFAULT_WRAPPER_HOST = "127.0.0.1"
 DEFAULT_WRAPPER_PORT = 10022
+WRAPPER_M3U8_PORT_OFFSET = 10000
+MAX_WRAPPER_DECRYPT_PORT = 65535 - WRAPPER_M3U8_PORT_OFFSET
+DEFAULT_DOCKER_COMMAND_TIMEOUT = 8.0
 
 
 @dataclass(frozen=True)
@@ -51,8 +54,10 @@ def parse_wrapper_decrypt_ip(wrapper_decrypt_ip: str) -> tuple[str, int]:
         parsed_port = int(port or str(DEFAULT_WRAPPER_PORT))
     except ValueError as exc:
         raise ValueError("Wrapper decrypt port must be an integer.") from exc
-    if not 1 <= parsed_port <= 65535:
-        raise ValueError("Wrapper decrypt port must be between 1 and 65535.")
+    if not 1 <= parsed_port <= MAX_WRAPPER_DECRYPT_PORT:
+        raise ValueError(
+            f"Wrapper decrypt port must be between 1 and {MAX_WRAPPER_DECRYPT_PORT}."
+        )
     return host, parsed_port
 
 
@@ -83,9 +88,15 @@ def prioritize_wrapper_candidates(
 
 
 class WrapperManager:
-    def __init__(self, docker_bin: str = "docker", wait_timeout: float = 8.0) -> None:
+    def __init__(
+        self,
+        docker_bin: str = "docker",
+        wait_timeout: float = 8.0,
+        docker_command_timeout: float = DEFAULT_DOCKER_COMMAND_TIMEOUT,
+    ) -> None:
         self.docker_bin = self._resolve_docker_bin(docker_bin)
         self.wait_timeout = wait_timeout
+        self.docker_command_timeout = docker_command_timeout
 
     @staticmethod
     def _resolve_docker_bin(docker_bin: str) -> str:
@@ -115,16 +126,23 @@ class WrapperManager:
     @staticmethod
     def _is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                probe.settimeout(timeout)
-                return probe.connect_ex((host, port)) == 0
+            addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except OSError:
             return False
+        for family, socktype, proto, _canonname, sockaddr in addresses:
+            try:
+                with socket.socket(family, socktype, proto) as probe:
+                    probe.settimeout(timeout)
+                    if probe.connect_ex(sockaddr) == 0:
+                        return True
+            except OSError:
+                continue
+        return False
 
     def _ports_ready(self, host: str, decrypt_port: int) -> bool:
         return self._is_port_open(host, decrypt_port) and self._is_port_open(
             host,
-            decrypt_port + 10000,
+            decrypt_port + WRAPPER_M3U8_PORT_OFFSET,
         )
 
     def probe_status(self, wrapper_decrypt_ip: str) -> WrapperStatus:
@@ -179,30 +197,39 @@ class WrapperManager:
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=self.docker_command_timeout,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
 
     def _list_wrapper_containers(self) -> list[str]:
-        result = subprocess.run(
-            [self.docker_bin, "ps", "-a", "--format", "{{.Names}}"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [self.docker_bin, "ps", "-a", "--format", "{{.Names}}"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.docker_command_timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
         if result.returncode != 0:
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     def _start_container(self, name: str) -> bool:
         logger.info("Trying to start wrapper container %s", name)
-        result = subprocess.run(
-            [self.docker_bin, "start", name],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [self.docker_bin, "start", name],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.docker_command_timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
         return result.returncode == 0
 
     def ensure_running(self, wrapper_decrypt_ip: str) -> str:

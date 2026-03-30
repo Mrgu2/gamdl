@@ -41,12 +41,28 @@ class WrapperDecryptIpValidationTests(unittest.TestCase):
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Gamdl-Request-Token": self.server.api_request_token,
+            },
             method="POST",
         )
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
         return error.exception.code, json.loads(error.exception.read().decode("utf-8"))
+
+    def _post_json(self, path: str, payload: dict) -> dict:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Gamdl-Request-Token": self.server.api_request_token,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.load(response)
 
     def test_post_settings_rejects_invalid_wrapper_decrypt_ip(self):
         status, data = self._post_json_error(
@@ -88,6 +104,45 @@ class WrapperDecryptIpValidationTests(unittest.TestCase):
         )
         self.assertFalse(settings_data["wrapper_status"]["available"])
         self.assertEqual(about_data["wrapper_status"]["mode"], "none")
+
+    def test_post_settings_rejects_non_loopback_wrapper_decrypt_ip(self):
+        status, data = self._post_json_error(
+            "/api/settings",
+            {
+                "output_path": str(self.paths.default_output_path),
+                "wrapper_decrypt_ip": "192.168.1.8:10022",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("本机回环地址", data["error"])
+        settings = self.server.settings_store.load()
+        self.assertEqual(settings.wrapper_decrypt_ip, "127.0.0.1:10022")
+
+    def test_post_settings_accepts_ipv6_loopback_wrapper_decrypt_ip(self):
+        data = self._post_json(
+            "/api/settings",
+            {
+                "output_path": str(self.paths.default_output_path),
+                "wrapper_decrypt_ip": "::1:10022",
+            },
+        )
+
+        self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "::1:10022")
+
+    def test_post_settings_rejects_ports_without_m3u8_headroom(self):
+        status, data = self._post_json_error(
+            "/api/settings",
+            {
+                "output_path": str(self.paths.default_output_path),
+                "wrapper_decrypt_ip": "127.0.0.1:55536",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("55535", data["error"])
+        settings = self.server.settings_store.load()
+        self.assertEqual(settings.wrapper_decrypt_ip, "127.0.0.1:10022")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus, resolve_executable
+from gamdl.downloader import GamdlError
+from gamdl.interface.types import PlaylistTags
 from gamdl.web_gui import (
     INDEX_HTML,
     GUI_SETTINGS_DEFAULTS,
@@ -148,6 +150,8 @@ class FakeFileActions:
 class FakeUrlInfo:
     type: str = "song"
     library_type: str | None = None
+    id: str | None = "123"
+    sub_id: str | None = None
 
 
 @dataclass
@@ -155,11 +159,18 @@ class FakeDownloadItem:
     final_path: str | None
     media_type: str = "song"
     title: str = "Test Song"
+    url: str | None = None
+    playlist_metadata: dict | None = None
+    playlist_tags: PlaylistTags | None = None
+    sidecar_failures: list[dict[str, str | None]] | None = None
     error: Exception | None = None
 
     @property
     def media_metadata(self):
-        return {"type": self.media_type, "attributes": {"name": self.title}}
+        attributes = {"name": self.title}
+        if self.url:
+            attributes["url"] = self.url
+        return {"type": self.media_type, "attributes": attributes}
 
 
 class FakeDownloader:
@@ -188,8 +199,22 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("Docker 官方安装文档", INDEX_HTML)
         self.assertIn('rel="icon"', INDEX_HTML)
         self.assertIn("https://docs.docker.com/desktop/setup/install/mac-install/", INDEX_HTML)
-        self.assertIn("docker build -t wrapper-local .", INDEX_HTML)
+        self.assertIn("https://github.com/WorldObservationLog/wrapper/releases", INDEX_HTML)
+        self.assertIn("Wrapper Releases", INDEX_HTML)
+        self.assertIn("curl -fsSL https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest", INDEX_HTML)
+        self.assertIn("docker build --platform linux/amd64 -t wrapper-local .", INDEX_HTML)
+        self.assertIn("--platform linux/amd64", INDEX_HTML)
+        self.assertIn("X-Gamdl-Request-Token", INDEX_HTML)
+        self.assertIn('echo "wrapper ok"', INDEX_HTML)
+        self.assertIn('echo "dockerfile ok"', INDEX_HTML)
+        self.assertIn("ls -l wrapper.zip", INDEX_HTML)
+        self.assertIn("COPY ./wrapper /app: not found", INDEX_HTML)
+        self.assertIn("127.0.0.1:10022 connection refused", INDEX_HTML)
         self.assertIn("wrapper-latest-10022", INDEX_HTML)
+        self.assertNotIn("-p 30022:30022", INDEX_HTML)
+        self.assertIn("-p 127.0.0.1:10022:10022", INDEX_HTML)
+        self.assertIn("-p 127.0.0.1:20022:20022", INDEX_HTML)
+        self.assertIn('-e args="-H 0.0.0.0 -D 10022 -M 20022"', INDEX_HTML)
         self.assertNotIn("免费 开源 纯净", INDEX_HTML)
         self.assertIn("brand-head", INDEX_HTML)
         self.assertIn("brand-mark", INDEX_HTML)
@@ -206,6 +231,8 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("打开下载目录", INDEX_HTML)
         self.assertIn("显示文件位置", INDEX_HTML)
         self.assertIn('id="open-file-application"', INDEX_HTML)
+        self.assertIn('id="save-playlist"', INDEX_HTML)
+        self.assertIn("payload.save_playlist = document.getElementById('save-playlist').value === 'true';", INDEX_HTML)
         self.assertIn("finder-menu", INDEX_HTML)
         self.assertIn("split-pill-anchor", INDEX_HTML)
         self.assertIn("split-pill-toggle", INDEX_HTML)
@@ -250,6 +277,16 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("position: fixed;", INDEX_HTML)
         self.assertIn("function positionOpenWithMenu(jobId)", INDEX_HTML)
         self.assertIn('id="open-with-menu"', INDEX_HTML)
+        self.assertIn('id="artist-auto-select"', INDEX_HTML)
+        self.assertIn("请选择艺术家内容", INDEX_HTML)
+        self.assertIn("function syncArtistDownloadOptionsFromInput()", INDEX_HTML)
+        self.assertIn("url.includes('/artist/')", INDEX_HTML)
+        self.assertIn("if (hasArtist) {", INDEX_HTML)
+        self.assertIn("syncArtistDownloadOptions([]);", INDEX_HTML)
+        self.assertIn("document.getElementById('url-input').addEventListener('input', syncArtistDownloadOptionsFromInput);", INDEX_HTML)
+        self.assertIn("本次任务里的所有 Artist 链接会共用这一下载内容", INDEX_HTML)
+        self.assertIn("function retryFailedItems(jobId)", INDEX_HTML)
+        self.assertIn("/retry-failed", INDEX_HTML)
         self.assertIn("function getOpenWithMenu()", INDEX_HTML)
         self.assertIn('.split-pill-anchor[data-job-id="${jobId}"] .split-pill-toggle', INDEX_HTML)
         self.assertIn("const desiredMenuWidth = 300;", INDEX_HTML)
@@ -326,6 +363,12 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertEqual(result["kind"], "playlist")
         self.assertTrue(result["supported"])
 
+    def test_classify_url_accepts_artist_for_desktop(self):
+        result = classify_url("https://music.apple.com/us/artist/test/123456789")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["kind"], "artist")
+        self.assertTrue(result["supported"])
+
     def test_classify_url_rejects_music_video_for_v1_desktop(self):
         result = classify_url("https://music.apple.com/us/music-video/test/123456789")
         self.assertTrue(result["valid"])
@@ -338,14 +381,18 @@ class WebGuiHelpersTests(unittest.TestCase):
                 "urls": ["https://music.apple.com/us/album/test/1"],
                 "output_path": "/tmp/downloads",
                 "overwrite": False,
+                "save_playlist": True,
                 "song_codec": "alac",
+                "artist_auto_select": "top-songs",
                 "use_wrapper": True,
                 "wrapper_decrypt_ip": "127.0.0.1:10022",
             }
         )
         self.assertEqual(command[0], "internal-download")
         self.assertIn("output_path=/tmp/downloads", command)
+        self.assertIn("save_playlist=True", command)
         self.assertIn("song_codec=alac", command)
+        self.assertIn("artist_auto_select=top-songs", command)
         self.assertIn("use_wrapper=True", command)
 
     def test_gui_settings_defaults_expose_desktop_fields(self):
@@ -357,6 +404,7 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("theme", GUI_SETTINGS_DEFAULTS)
         self.assertIn("use_wrapper", GUI_SETTINGS_DEFAULTS)
         self.assertIn("wrapper_decrypt_ip", GUI_SETTINGS_DEFAULTS)
+        self.assertIn("artist_auto_select", GUI_SETTINGS_DEFAULTS)
         self.assertIn("open_file_application", GUI_SETTINGS_DEFAULTS)
 
 
@@ -399,7 +447,10 @@ class WebGuiApiTests(unittest.TestCase):
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Gamdl-Request-Token": self.server.api_request_token,
+            },
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -409,12 +460,53 @@ class WebGuiApiTests(unittest.TestCase):
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Gamdl-Request-Token": self.server.api_request_token,
+            },
             method="POST",
         )
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
         return error.exception.code, json.loads(error.exception.read().decode("utf-8"))
+
+    def test_post_rejects_missing_local_request_token(self):
+        request = urllib.request.Request(
+            f"{self.base_url}/api/auth/logout",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+
+        self.assertEqual(error.exception.code, 403)
+        self.assertIn("本地会话令牌", error.exception.read().decode("utf-8"))
+
+    def test_post_rejects_non_json_content_type(self):
+        request = urllib.request.Request(
+            f"{self.base_url}/api/settings",
+            data=b"{}",
+            headers={
+                "Content-Type": "text/plain",
+                "X-Gamdl-Request-Token": self.server.api_request_token,
+            },
+            method="POST",
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+
+        self.assertEqual(error.exception.code, 415)
+        self.assertIn("application/json", error.exception.read().decode("utf-8"))
+
+    def test_get_index_injects_runtime_request_token(self):
+        with urllib.request.urlopen(f"{self.base_url}/") as response:
+            html = response.read().decode("utf-8")
+
+        self.assertIn(self.server.api_request_token, html)
+        self.assertNotIn("__GAMDL_API_REQUEST_TOKEN__", html)
 
     def _store_job(self, job: Job) -> None:
         with self.server.job_manager.jobs_lock:
@@ -431,6 +523,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(data["settings"]["theme"], "warm")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
+        self.assertEqual(data["settings"]["artist_auto_select"], "")
         self.assertIn("wrapper_status", data)
         self.assertTrue(data["wrapper_status"]["message"])
         self.assertIn("runtime", data)
@@ -466,6 +559,7 @@ class WebGuiApiTests(unittest.TestCase):
                 "theme": "cool",
                 "use_wrapper": False,
                 "wrapper_decrypt_ip": "127.0.0.1:10022",
+                "artist_auto_select": "top-songs",
                 "open_file_application": "VLC",
                 "unknown_field": "ignored",
             },
@@ -479,6 +573,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(data["settings"]["theme"], "cool")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
+        self.assertEqual(data["settings"]["artist_auto_select"], "")
         self.assertEqual(data["settings"]["open_file_application"], "VLC")
         self.assertNotIn("unknown_field", data["settings"])
 
@@ -643,6 +738,53 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(data["error"], "请先完成 Apple Music 登录。")
 
+    def test_create_job_rejects_artist_without_selection(self):
+        self.server.auth_manager.login_with_webview()
+
+        status, data = self._post_json_error(
+            "/api/jobs",
+            {
+                "url_text": "https://music.apple.com/us/artist/test/123456789",
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "log_level": "INFO",
+                "artist_auto_select": "",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "检测到艺术家链接，请先选择要下载的艺术家内容。")
+
+    def test_create_job_accepts_artist_with_selection(self):
+        self.server.auth_manager.login_with_webview()
+
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            return_value=FakeDownloadResult(
+                downloaded_items=2,
+                output_path=str(self.paths.app_support_dir / "downloads"),
+            ),
+        ):
+            data = self._post_json(
+                "/api/jobs",
+                {
+                    "url_text": "https://music.apple.com/us/artist/test/123456789",
+                    "output_path": str(self.paths.app_support_dir / "downloads"),
+                    "overwrite": False,
+                    "save_cover": True,
+                    "log_level": "INFO",
+                    "artist_auto_select": "top-songs",
+                },
+            )
+            job = self._get_json(f"/api/jobs/{data['id']}")
+
+        self.assertEqual(job["payload"]["artist_auto_select"], "top-songs")
+        self.assertEqual(job["url_preview"][0]["kind"], "artist")
+
+        settings = self._get_json("/api/settings")
+        self.assertEqual(settings["settings"]["artist_auto_select"], "")
+
     def test_create_job_rejects_wrapper_required_codec_when_wrapper_disabled(self):
         self.server.auth_manager.login_with_webview()
 
@@ -728,6 +870,262 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(job["result"]["errors"], 1)
         self.assertEqual(job["result"]["downloaded_items"], 0)
         self.assertEqual(job["result"]["output_path"], str(downloads_path))
+
+    def test_retry_failed_job_requeues_retryable_urls(self):
+        self.server.auth_manager.login_with_webview()
+        failed_job = Job(
+            id="job-retry-failed",
+            urls=["https://music.apple.com/us/album/test/1"],
+            url_preview=[{"kind": "album", "supported": True, "valid": True}],
+            payload={
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "log_level": "INFO",
+                "song_codec": "aac-legacy",
+                "use_wrapper": False,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+                "artist_auto_select": "",
+            },
+            command=[],
+            status="failed",
+            result={
+                "errors": 1,
+                "failed_items": [
+                    {
+                        "title": "Track 1",
+                        "retry_url": "https://music.apple.com/us/song/test-song/111",
+                        "retry_target": {
+                            "strategy": "url",
+                            "url": "https://music.apple.com/us/song/test-song/111",
+                        },
+                        "error": "boom",
+                    },
+                    {
+                        "title": "Track 2",
+                        "retry_url": "https://music.apple.com/us/song/test-song/111",
+                        "retry_target": {
+                            "strategy": "url",
+                            "url": "https://music.apple.com/us/song/test-song/111",
+                        },
+                        "error": "boom",
+                    },
+                    {
+                        "title": "Track 3",
+                        "retry_url": "https://music.apple.com/us/song/test-song/222",
+                        "retry_target": {
+                            "strategy": "url",
+                            "url": "https://music.apple.com/us/song/test-song/222",
+                        },
+                        "error": "boom",
+                    },
+                ],
+            },
+        )
+        self._store_job(failed_job)
+
+        data = self._post_json("/api/jobs/job-retry-failed/retry-failed", {})
+        retry_job = self._get_json(f"/api/jobs/{data['retry_job']['id']}")
+
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["retry_count"], 2)
+        self.assertEqual(
+            retry_job["urls"],
+            [
+                "https://music.apple.com/us/song/test-song/111",
+                "https://music.apple.com/us/song/test-song/222",
+            ],
+        )
+        self.assertEqual(
+            retry_job["payload"]["retry_items"],
+            [
+                {
+                    "title": "Track 1",
+                    "kind": None,
+                    "source_url": None,
+                    "strategy": "url",
+                    "url": "https://music.apple.com/us/song/test-song/111",
+                },
+                {
+                    "title": "Track 3",
+                    "kind": None,
+                    "source_url": None,
+                    "strategy": "url",
+                    "url": "https://music.apple.com/us/song/test-song/222",
+                },
+            ],
+        )
+
+    def test_create_download_job_preserves_task_level_save_playlist(self):
+        self.server.auth_manager.login_with_webview()
+        downloads_path = self.paths.app_support_dir / "downloads"
+
+        data = self._post_json(
+            "/api/jobs",
+            {
+                "url_text": "https://music.apple.com/us/playlist/test/pl.u-abcdef123",
+                "output_path": str(downloads_path),
+                "overwrite": False,
+                "save_cover": True,
+                "save_playlist": True,
+                "log_level": "INFO",
+                "song_codec": "aac-legacy",
+                "use_wrapper": False,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+            },
+        )
+
+        job = self._get_json(f"/api/jobs/{data['id']}")
+        self.assertTrue(job["payload"]["save_playlist"])
+
+    def test_retry_failed_job_preserves_playlist_retry_context(self):
+        self.server.auth_manager.login_with_webview()
+        failed_job = Job(
+            id="job-retry-playlist",
+            urls=["https://music.apple.com/us/playlist/test/pl.1"],
+            url_preview=[{"kind": "playlist", "supported": True, "valid": True}],
+            payload={
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "save_playlist": True,
+                "log_level": "INFO",
+                "song_codec": "aac-legacy",
+                "use_wrapper": False,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+                "artist_auto_select": "",
+            },
+            command=[],
+            status="failed",
+            result={
+                "errors": 2,
+                "failed_items": [
+                    {
+                        "title": "Track 1",
+                        "kind": "song",
+                        "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                        "retry_url": "https://music.apple.com/us/song/test-song/111",
+                        "retry_target": {
+                            "strategy": "playlist-track",
+                            "song_url": "https://music.apple.com/us/song/test-song/111",
+                            "playlist_tags": {
+                                "playlist_artist": "Foo",
+                                "playlist_title": "Bar",
+                                "playlist_id": 123,
+                                "playlist_track": 1,
+                            },
+                        },
+                        "error": "boom",
+                    },
+                    {
+                        "title": "Track 1 duplicate",
+                        "kind": "song",
+                        "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                        "retry_url": "https://music.apple.com/us/song/test-song/111",
+                        "retry_target": {
+                            "strategy": "playlist-track",
+                            "song_url": "https://music.apple.com/us/song/test-song/111",
+                            "playlist_tags": {
+                                "playlist_artist": "Foo",
+                                "playlist_title": "Bar",
+                                "playlist_id": 123,
+                                "playlist_track": 1,
+                            },
+                        },
+                        "error": "boom",
+                    },
+                    {
+                        "title": "Track 1 second slot",
+                        "kind": "song",
+                        "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                        "retry_url": "https://music.apple.com/us/song/test-song/111",
+                        "retry_target": {
+                            "strategy": "playlist-track",
+                            "song_url": "https://music.apple.com/us/song/test-song/111",
+                            "playlist_tags": {
+                                "playlist_artist": "Foo",
+                                "playlist_title": "Bar",
+                                "playlist_id": 123,
+                                "playlist_track": 3,
+                            },
+                        },
+                        "error": "boom",
+                    },
+                ],
+            },
+        )
+        self._store_job(failed_job)
+
+        data = self._post_json("/api/jobs/job-retry-playlist/retry-failed", {})
+        retry_job = self._get_json(f"/api/jobs/{data['retry_job']['id']}")
+
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["retry_count"], 2)
+        self.assertEqual(
+            retry_job["payload"]["retry_items"],
+            [
+                {
+                    "title": "Track 1",
+                    "kind": "song",
+                    "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                    "strategy": "playlist-track",
+                    "song_url": "https://music.apple.com/us/song/test-song/111",
+                    "playlist_tags": {
+                        "playlist_artist": "Foo",
+                        "playlist_title": "Bar",
+                        "playlist_id": 123,
+                        "playlist_track": 1,
+                    },
+                },
+                {
+                    "title": "Track 1 second slot",
+                    "kind": "song",
+                    "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                    "strategy": "playlist-track",
+                    "song_url": "https://music.apple.com/us/song/test-song/111",
+                    "playlist_tags": {
+                        "playlist_artist": "Foo",
+                        "playlist_title": "Bar",
+                        "playlist_id": 123,
+                        "playlist_track": 3,
+                    },
+                },
+            ],
+        )
+        self.assertEqual(
+            retry_job["urls"],
+            [
+                "https://music.apple.com/us/song/test-song/111",
+                "https://music.apple.com/us/song/test-song/111",
+            ],
+        )
+
+    def test_retry_failed_job_rejects_when_no_retryable_items(self):
+        self.server.auth_manager.login_with_webview()
+        failed_job = Job(
+            id="job-no-retry",
+            urls=["https://music.apple.com/us/album/test/1"],
+            url_preview=[{"kind": "album", "supported": True, "valid": True}],
+            payload={
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "log_level": "INFO",
+                "song_codec": "aac-legacy",
+                "use_wrapper": False,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+                "artist_auto_select": "",
+            },
+            command=[],
+            status="failed",
+            result={"errors": 1, "failed_items": [{"title": "Track 1", "retry_url": None}]},
+        )
+        self._store_job(failed_job)
+
+        status, data = self._post_json_error("/api/jobs/job-no-retry/retry-failed", {})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "当前任务没有可重试的失败歌曲。")
 
     def test_create_convert_job_uses_internal_conversion_service(self):
         input_file = self.paths.app_support_dir / "input" / "Track.m4a"
@@ -997,6 +1395,88 @@ class DownloadServiceTests(unittest.TestCase):
         finally:
             tempdir.cleanup()
 
+    def test_create_downloader_passes_artist_auto_select(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_api = type(
+                "FakeApi",
+                (),
+                {
+                    "active_subscription": True,
+                    "storefront": "us",
+                    "language": "zh-CN",
+                },
+            )()
+
+            with (
+                patch("gamdl.app.downloads.AppleMusicApi.create", new=AsyncMock(return_value=fake_api)),
+                patch("gamdl.app.downloads.ItunesApi"),
+                patch("gamdl.app.downloads.AppleMusicInterface"),
+                patch("gamdl.app.downloads.AppleMusicSongInterface"),
+                patch("gamdl.app.downloads.AppleMusicSongDownloader"),
+                patch("gamdl.app.downloads.AppleMusicBaseDownloader"),
+                patch("gamdl.app.downloads.AppleMusicDownloader") as downloader_cls,
+            ):
+                asyncio.run(
+                    service._create_downloader(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/artist/test/1"],
+                            output_path="/tmp/downloads",
+                            artist_auto_select="top-songs",
+                        )
+                    )
+                )
+
+            self.assertEqual(
+                downloader_cls.call_args.kwargs["artist_auto_select"].value,
+                "top-songs",
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_marks_album_track_url_failures_as_retryable_song(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            track_url = "https://music.apple.com/us/album/test/1?i=123"
+
+            class SongUrlFailureDownloader:
+                interface = type(
+                    "FakeInterface",
+                    (),
+                    {"apple_music_api": type("FakeApi", (), {"storefront": "us"})()},
+                )()
+
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="album", id="1", sub_id="123")
+
+                async def get_download_queue(self, _url_info):
+                    raise RuntimeError("boom")
+
+            with patch.object(
+                service,
+                "_create_downloader",
+                new=AsyncMock(return_value=SongUrlFailureDownloader()),
+            ):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=[track_url],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(result.failed_items[0]["kind"], "song")
+            self.assertEqual(result.failed_items[0]["retry_url"], track_url)
+        finally:
+            tempdir.cleanup()
+
     def test_run_tracks_last_successful_media_file(self):
         tempdir = tempfile.TemporaryDirectory()
         try:
@@ -1032,13 +1512,190 @@ class DownloadServiceTests(unittest.TestCase):
         finally:
             tempdir.cleanup()
 
+    def test_run_marks_album_url_failures_as_retryable_collection(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+
+            class AlbumUrlFailureDownloader:
+                interface = type(
+                    "FakeInterface",
+                    (),
+                    {"apple_music_api": type("FakeApi", (), {"storefront": "us"})()},
+                )()
+
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="album")
+
+                async def get_download_queue(self, _url_info):
+                    raise RuntimeError("boom")
+
+            with patch.object(
+                service,
+                "_create_downloader",
+                new=AsyncMock(return_value=AlbumUrlFailureDownloader()),
+            ):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/album/test/1"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/album/test/1",
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_falls_back_to_album_url_for_track_failures_without_song_url(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_downloader = FakeDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "missing" / "Track 1.m4a"),
+                        media_type="song",
+                        title="Track 1",
+                        url=None,
+                        error=Exception("boom"),
+                    )
+                ]
+            )
+
+            class AlbumTrackFailureDownloader(FakeDownloader):
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="album")
+
+            fake_downloader = AlbumTrackFailureDownloader(fake_downloader.queue_items)
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/album/test/1"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/album/test/1",
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_falls_back_to_artist_url_for_track_failures_without_song_url(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_downloader = FakeDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "missing" / "Track 1.m4a"),
+                        media_type="song",
+                        title="Track 1",
+                        url=None,
+                        error=Exception("boom"),
+                    )
+                ]
+            )
+
+            class ArtistTrackFailureDownloader(FakeDownloader):
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="artist")
+
+            fake_downloader = ArtistTrackFailureDownloader(fake_downloader.queue_items)
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/artist/test/1"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/artist/test/1",
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_falls_back_to_playlist_url_for_track_failures_without_song_url(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_downloader = FakeDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "missing" / "Track 1.m4a"),
+                        media_type="song",
+                        title="Track 1",
+                        url=None,
+                        error=Exception("boom"),
+                    )
+                ]
+            )
+
+            class PlaylistTrackFailureDownloader(FakeDownloader):
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="playlist")
+
+            fake_downloader = PlaylistTrackFailureDownloader(fake_downloader.queue_items)
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/playlist/test/pl.1"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/playlist/test/pl.1",
+            )
+        finally:
+            tempdir.cleanup()
+
     def test_run_leaves_latest_media_empty_when_all_items_fail_or_skip(self):
         tempdir = tempfile.TemporaryDirectory()
         try:
             paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
             service = DownloadService(media_user_token="test-token", paths=paths)
             missing_path = Path(tempdir.name) / "missing" / "Track 1.m4a"
-            fake_downloader = FakeDownloader([FakeDownloadItem(final_path=str(missing_path), error=Exception("boom"))])
+            fake_downloader = FakeDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(missing_path),
+                        title="Track 1",
+                        url="https://music.apple.com/us/song/track-1/123",
+                        error=Exception("boom"),
+                    )
+                ]
+            )
 
             with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
                 result = asyncio.run(
@@ -1054,6 +1711,411 @@ class DownloadServiceTests(unittest.TestCase):
             self.assertEqual(result.errors, 1)
             self.assertIsNone(result.latest_media_path)
             self.assertIsNone(result.latest_media_dir)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/song/track-1/123",
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_records_playlist_retry_context_for_failed_song(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_downloader = FakeDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "missing" / "Track 1.m4a"),
+                        title="Track 1",
+                        url="https://music.apple.com/us/song/track-1/123",
+                        playlist_metadata={
+                            "type": "playlist",
+                            "attributes": {"name": "Test Playlist"},
+                        },
+                        playlist_tags=PlaylistTags(
+                            playlist_artist="Foo",
+                            playlist_title="Test Playlist",
+                            playlist_id=123,
+                            playlist_track=2,
+                        ),
+                        error=Exception("boom"),
+                    )
+                ]
+            )
+
+            class PlaylistTrackFailureDownloader(FakeDownloader):
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="playlist")
+
+            fake_downloader = PlaylistTrackFailureDownloader(fake_downloader.queue_items)
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/playlist/test/pl.123"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/song/track-1/123",
+            )
+            self.assertEqual(
+                result.failed_items[0]["retry_target"],
+                {
+                    "strategy": "playlist-track",
+                    "song_url": "https://music.apple.com/us/song/track-1/123",
+                    "playlist_tags": {
+                        "playlist_artist": "Foo",
+                        "playlist_id": 123,
+                        "playlist_title": "Test Playlist",
+                        "playlist_track": 2,
+                    },
+                },
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_surfaces_sidecar_failures_in_logs_and_failed_items(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            logs = []
+            service = DownloadService(
+                media_user_token="test-token",
+                paths=paths,
+                log_callback=logs.append,
+            )
+
+            class SidecarFailureDownloader(FakeDownloader):
+                async def download(self, download_item):
+                    download_item.sidecar_failures = [
+                        {"artifact_kind": "cover", "error": "cover boom"},
+                        {"artifact_kind": "playlist-file", "error": "playlist boom"},
+                    ]
+                    return None
+
+            fake_downloader = SidecarFailureDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "done" / "Track 1.m4a"),
+                        title="Track 1",
+                        url="https://music.apple.com/us/song/track-1/123",
+                    )
+                ]
+            )
+            Path(fake_downloader.queue_items[0].final_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(fake_downloader.queue_items[0].final_path).write_text("audio", encoding="utf-8")
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/song/track-1/123"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 0)
+            self.assertEqual(result.downloaded_items, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertTrue(result.failed_items[0]["warning_only"])
+            self.assertEqual(
+                result.failed_items[0]["retry_url"],
+                "https://music.apple.com/us/song/track-1/123",
+            )
+            self.assertEqual(
+                result.failed_items[0]["sidecar_failures"],
+                [
+                    {"artifact_kind": "cover", "error": "cover boom"},
+                    {"artifact_kind": "playlist-file", "error": "playlist boom"},
+                ],
+            )
+            self.assertTrue(any('辅助文件写入失败 "Track 1" [cover]: cover boom' in line for line in logs))
+            self.assertTrue(any('辅助文件写入失败 "Track 1" [playlist-file]: playlist boom' in line for line in logs))
+        finally:
+            tempdir.cleanup()
+
+    def test_run_surfaces_sidecar_failures_on_media_file_exists_skip(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            logs = []
+            service = DownloadService(
+                media_user_token="test-token",
+                paths=paths,
+                log_callback=logs.append,
+            )
+
+            class SidecarSkipDownloader(FakeDownloader):
+                async def download(self, download_item):
+                    download_item.sidecar_failures = [
+                        {"artifact_kind": "lyrics", "error": "lyrics boom"},
+                    ]
+                    raise GamdlError("exists")
+
+            fake_downloader = SidecarSkipDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "done" / "Track 1.m4a"),
+                        title="Track 1",
+                        url="https://music.apple.com/us/song/track-1/123",
+                    )
+                ]
+            )
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/song/track-1/123"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 0)
+            self.assertEqual(result.skipped_items, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertTrue(result.failed_items[0]["warning_only"])
+            self.assertEqual(
+                result.failed_items[0]["sidecar_failures"],
+                [{"artifact_kind": "lyrics", "error": "lyrics boom"}],
+            )
+            self.assertTrue(any('辅助文件写入失败 "Track 1" [lyrics]: lyrics boom' in line for line in logs))
+        finally:
+            tempdir.cleanup()
+
+    def test_run_retries_playlist_track_with_preserved_context(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            downloads_path = Path(tempdir.name) / "downloads"
+            playlist_file_path = downloads_path / "Playlists" / "Bar.m3u8"
+            song_url = "https://music.apple.com/us/song/test-song/111"
+            playlist_tags = {
+                "playlist_artist": "Foo",
+                "playlist_title": "Bar",
+                "playlist_id": 123,
+                "playlist_track": 2,
+            }
+            song_metadata = {
+                "id": "111",
+                "type": "song",
+                "attributes": {
+                    "name": "Track 1",
+                    "url": song_url,
+                },
+            }
+
+            class RetrySongDownloader:
+                def __init__(self):
+                    self.calls = []
+
+                async def get_download_item(
+                    self,
+                    song_metadata_arg,
+                    playlist_metadata=None,
+                    playlist_tags_override=None,
+                ):
+                    self.calls.append(
+                        {
+                            "song_metadata": song_metadata_arg,
+                            "playlist_metadata": playlist_metadata,
+                            "playlist_tags_override": playlist_tags_override,
+                        }
+                    )
+                    final_path = downloads_path / "Tracks" / "Track 1.m4a"
+                    return SimpleNamespace(
+                        media_metadata=song_metadata_arg,
+                        playlist_metadata=None,
+                        playlist_tags=playlist_tags_override,
+                        playlist_file_path=str(playlist_file_path),
+                        final_path=str(final_path),
+                        error=None,
+                    )
+
+            class RetryApi:
+                storefront = "us"
+
+                async def get_song(self, song_id):
+                    return {"data": [{**song_metadata, "id": song_id}]}
+
+            class RetryDownloader:
+                def __init__(self):
+                    self.interface = SimpleNamespace(apple_music_api=RetryApi())
+                    self.song_downloader = RetrySongDownloader()
+
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="song", id="111")
+
+                async def download(self, download_item):
+                    final_path = Path(download_item.final_path)
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    final_path.write_text("audio", encoding="utf-8")
+                    playlist_file = Path(download_item.playlist_file_path)
+                    playlist_file.parent.mkdir(parents=True, exist_ok=True)
+                    lines = playlist_file.read_text(encoding="utf-8").splitlines() if playlist_file.exists() else []
+                    while len(lines) < download_item.playlist_tags.playlist_track:
+                        lines.append("")
+                    lines[download_item.playlist_tags.playlist_track - 1] = "Tracks/Track 1.m4a"
+                    playlist_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            fake_downloader = RetryDownloader()
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/playlist/test/pl.1"],
+                            output_path=str(downloads_path),
+                            save_playlist=True,
+                            retry_items=[
+                                {
+                                    "title": "Track 1",
+                                    "kind": "song",
+                                    "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                                    "strategy": "playlist-track",
+                                    "song_url": song_url,
+                                    "playlist_tags": playlist_tags,
+                                }
+                            ],
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 0)
+            self.assertEqual(result.downloaded_items, 1)
+            self.assertEqual(result.processed_urls, 1)
+            self.assertEqual(
+                fake_downloader.song_downloader.calls[0]["playlist_tags_override"],
+                PlaylistTags(**playlist_tags),
+            )
+            self.assertEqual(
+                playlist_file_path.read_text(encoding="utf-8").splitlines(),
+                ["", "Tracks/Track 1.m4a"],
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_retries_playlist_track_with_album_sub_id_link(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            downloads_path = Path(tempdir.name) / "downloads"
+            playlist_file_path = downloads_path / "Playlists" / "Bar.m3u8"
+            song_url = "https://music.apple.com/us/album/test/1?i=111"
+            playlist_tags = {
+                "playlist_artist": "Foo",
+                "playlist_title": "Bar",
+                "playlist_id": 123,
+                "playlist_track": 2,
+            }
+            song_metadata = {
+                "id": "111",
+                "type": "song",
+                "attributes": {
+                    "name": "Track 1",
+                    "url": song_url,
+                },
+            }
+
+            class RetrySongDownloader:
+                def __init__(self):
+                    self.calls = []
+
+                async def get_download_item(
+                    self,
+                    song_metadata_arg,
+                    playlist_metadata=None,
+                    playlist_tags_override=None,
+                ):
+                    self.calls.append(
+                        {
+                            "song_metadata": song_metadata_arg,
+                            "playlist_metadata": playlist_metadata,
+                            "playlist_tags_override": playlist_tags_override,
+                        }
+                    )
+                    final_path = downloads_path / "Tracks" / "Track 1.m4a"
+                    return SimpleNamespace(
+                        media_metadata=song_metadata_arg,
+                        playlist_metadata=None,
+                        playlist_tags=playlist_tags_override,
+                        playlist_file_path=str(playlist_file_path),
+                        final_path=str(final_path),
+                        error=None,
+                    )
+
+            class RetryApi:
+                storefront = "us"
+
+                async def get_song(self, song_id):
+                    return {"data": [{**song_metadata, "id": song_id}]}
+
+            class RetryDownloader:
+                def __init__(self):
+                    self.interface = SimpleNamespace(apple_music_api=RetryApi())
+                    self.song_downloader = RetrySongDownloader()
+
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="album", id="1", sub_id="111")
+
+                async def download(self, download_item):
+                    final_path = Path(download_item.final_path)
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    final_path.write_text("audio", encoding="utf-8")
+                    playlist_file = Path(download_item.playlist_file_path)
+                    playlist_file.parent.mkdir(parents=True, exist_ok=True)
+                    lines = playlist_file.read_text(encoding="utf-8").splitlines() if playlist_file.exists() else []
+                    while len(lines) < download_item.playlist_tags.playlist_track:
+                        lines.append("")
+                    lines[download_item.playlist_tags.playlist_track - 1] = "Tracks/Track 1.m4a"
+                    playlist_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            fake_downloader = RetryDownloader()
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/playlist/test/pl.1"],
+                            output_path=str(downloads_path),
+                            save_playlist=True,
+                            retry_items=[
+                                {
+                                    "title": "Track 1",
+                                    "kind": "song",
+                                    "source_url": "https://music.apple.com/us/playlist/test/pl.1",
+                                    "strategy": "playlist-track",
+                                    "song_url": song_url,
+                                    "playlist_tags": playlist_tags,
+                                }
+                            ],
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 0)
+            self.assertEqual(result.downloaded_items, 1)
+            self.assertEqual(
+                fake_downloader.song_downloader.calls[0]["playlist_tags_override"],
+                PlaylistTags(**playlist_tags),
+            )
+            self.assertEqual(
+                playlist_file_path.read_text(encoding="utf-8").splitlines(),
+                ["", "Tracks/Track 1.m4a"],
+            )
         finally:
             tempdir.cleanup()
 
