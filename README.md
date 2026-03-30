@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.0.7
+# Gamdl Desktop Fork 1.1.0
 
-[![Release](https://img.shields.io/badge/release-1.0.7-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.1.0-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.0.7` 的目标很明确：
+`Gamdl Desktop Fork 1.1.0` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单、艺术家下载
@@ -26,9 +26,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.0.7 发布内容
+## 1.1.0 发布内容
 
-正式版 `1.0.7` 这次继续发布 macOS 桌面包：
+正式版 `1.1.0` 这次继续发布 macOS 桌面包：
 
 - `Apple Music Downloader-arm64.dmg`
   - 面向 Apple Silicon Mac
@@ -39,13 +39,14 @@
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖一轮下载链路和桌面 Web UI 的回归修正，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖一轮 artist 下载、失败重试、wrapper 安全面收紧和桌面 Web UI 收口，并继续沿用之前 release 的分发方式：
 
-- 日志页新增“打开日志目录”，日志刷新会保持贴底并避免打断复制
-- 浏览器导入开关现在会真正生效，关闭后前后端都会拒绝导入
-- 下载页会前置拦截“未登录”和“ALAC/Atmos 但未启用 wrapper”的无效提交
-- 失败任务会正确显示错误数，并保留“打开下载目录”
-- 当歌曲没有可用流信息时，会明确报成格式不可用而不是吞成其他异常
+- 桌面版正式开放 artist 链接下载，并提供 `Top Songs / Main Albums / Singles & EPs / All Albums` 选择
+- 下载任务会记录可重试的失败歌曲，任务页新增“重试失败歌曲”，补漏时不再误重跑整个 artist / playlist 集合
+- playlist 失败补漏会保留歌单上下文并继续写回 `.m3u8`，整专里个别单曲失败时也会回退到父链接补齐
+- 下载后处理改为“媒体文件成功落盘后再写封面、歌词、歌单文件”，sidecar 失败会记 warning 而不是把已下载成功的媒体误报成失败
+- 本地 Web API 现在要求本地随机令牌和 `application/json`，wrapper 设置也只接受回环地址，进一步收紧 localhost CSRF 与令牌暴露面
+- token 存储改为优先 keyring，成功读回 keyring 后自动清理 `.token` 明文兜底文件
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -107,7 +108,7 @@ macOS 包说明：
 
 ### Windows
 
-当前 `1.0.7` release 不附带 Windows 安装包。
+当前 `1.1.0` release 不附带 Windows 安装包。
 
 Windows 包说明：
 
