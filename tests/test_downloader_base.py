@@ -1,6 +1,8 @@
 import unittest
 import inspect
+from unittest.mock import AsyncMock, patch
 
+from gamdl.network import NetworkConfig
 from gamdl.downloader.downloader_base import AppleMusicBaseDownloader
 
 
@@ -35,3 +37,47 @@ class AppleMusicBaseDownloaderTests(unittest.TestCase):
         downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
         downloader.wrapper_decrypt_ip = "10022"
         self.assertEqual(downloader.get_wrapper_m3u8_ip(), "127.0.0.1:20022")
+
+    @patch("gamdl.downloader.downloader_base.YoutubeDL")
+    def test_download_ytdlp_passes_empty_proxy_in_direct_mode(self, ytdlp_cls):
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.network_config = NetworkConfig(mode="direct", proxy_url="")
+        downloader.silent = False
+
+        downloader._download_ytdlp("https://example.com/stream.m3u8", "/tmp/out.m4a")
+
+        options = ytdlp_cls.call_args.args[0]
+        self.assertEqual(options["proxy"], "")
+
+    @patch("gamdl.downloader.downloader_base.YoutubeDL")
+    def test_download_ytdlp_passes_custom_proxy(self, ytdlp_cls):
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.network_config = NetworkConfig(mode="custom", proxy_url="http://127.0.0.1:7890")
+        downloader.silent = True
+
+        downloader._download_ytdlp("https://example.com/stream.m3u8", "/tmp/out.m4a")
+
+        options = ytdlp_cls.call_args.args[0]
+        self.assertEqual(options["proxy"], "http://127.0.0.1:7890")
+
+    @patch("gamdl.downloader.downloader_base.async_subprocess", new_callable=AsyncMock)
+    def test_download_nm3u8dlre_passes_network_config(self, async_subprocess_mock):
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.full_nm3u8dlre_path = "N_m3u8DL-RE"
+        downloader.full_ffmpeg_path = "ffmpeg"
+        downloader.silent = True
+        downloader.network_config = NetworkConfig(mode="custom", proxy_url="http://127.0.0.1:7890")
+
+        import asyncio
+
+        asyncio.run(
+            downloader.download_nm3u8dlre(
+                "https://example.com/stream.m3u8",
+                "/tmp/test/out.m4a",
+            )
+        )
+
+        self.assertEqual(
+            async_subprocess_mock.call_args.kwargs["network_config"],
+            downloader.network_config,
+        )

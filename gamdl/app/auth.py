@@ -14,7 +14,9 @@ from typing import Iterable
 
 from ..api import AppleMusicApi
 from ..api.apple_music_api import _matches_apple_music_cookie_domain
+from ..network import NetworkConfig, build_subprocess_env, normalize_network_config
 from .paths import AppPaths
+from .settings import AppSettingsStore
 
 logger = logging.getLogger("gamdl.app.auth")
 
@@ -105,17 +107,15 @@ class TokenStore:
 
     def set(self, token: str) -> None:
         self._cached_token = token
-        wrote_to_keyring = False
         keyring = self._keyring()
         if keyring:
             try:
                 keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
-                wrote_to_keyring = True
             except Exception as exc:
                 self._log_keyring_error("write", exc)
-        if wrote_to_keyring:
-            self._write_fallback_token(token)
-            return
+            else:
+                self.paths.token_fallback_path.unlink(missing_ok=True)
+                return
         self._write_fallback_token(token)
 
     def delete(self) -> None:
@@ -132,7 +132,12 @@ class TokenStore:
 class AuthManager:
     def __init__(self, paths: AppPaths | None = None) -> None:
         self.paths = paths or AppPaths()
+        self.settings_store = AppSettingsStore(self.paths)
         self.token_store = TokenStore(self.paths)
+
+    def _network_config(self) -> NetworkConfig:
+        settings = self.settings_store.load()
+        return normalize_network_config(settings.network_mode, settings.proxy_url)
 
     def _load_session(self) -> dict:
         if not self.paths.session_path.exists():
@@ -161,6 +166,7 @@ class AuthManager:
             storefront=None,
             language=language,
             media_user_token=token,
+            network_config=self._network_config(),
         )
         return SessionStatus(
             connected=True,
@@ -268,6 +274,7 @@ class AuthManager:
                 check=True,
                 capture_output=True,
                 text=True,
+                env=build_subprocess_env(self._network_config()),
             )
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(f"无法打开 {app_name}。请确认浏览器已安装。") from exc
@@ -381,6 +388,27 @@ class AuthManager:
         if not token:
             raise RuntimeError("尚未登录 Apple Music。")
         return token
+
+    def invalidate_session(
+        self,
+        reason: str = "Apple Music 登录已失效，请重新登录。",
+    ) -> SessionStatus:
+        saved = self._load_session()
+        logger.info("Invalidating saved Apple Music session: %s", reason)
+        self.token_store.delete()
+        payload = {
+            "connected": False,
+            "login_method": saved.get("login_method"),
+            "browser": saved.get("browser"),
+            "storefront": saved.get("storefront"),
+            "language": saved.get("language"),
+            "active_subscription": False,
+            "account_restrictions": None,
+            "checked_at": None,
+            "last_error": reason,
+        }
+        self._save_session(payload)
+        return SessionStatus(**payload)
 
     def logout(self) -> SessionStatus:
         logger.info("Clearing saved Apple Music session")

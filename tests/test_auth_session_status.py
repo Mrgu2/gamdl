@@ -88,6 +88,28 @@ class AuthSessionStatusTests(unittest.TestCase):
         open_browser.assert_called_once()
         wait_login.assert_called_once()
 
+    def test_invalidate_session_clears_token_and_preserves_context(self):
+        self._write_session(
+            {
+                "connected": True,
+                "login_method": LoginMethod.BROWSER_IMPORT.value,
+                "browser": "chrome",
+                "storefront": "us",
+                "language": "zh-CN",
+                "active_subscription": True,
+                "account_restrictions": {},
+            }
+        )
+
+        status = self.manager.invalidate_session("Apple Music 登录已失效，请重新登录。")
+
+        self.assertFalse(status.connected)
+        self.assertEqual(status.login_method, LoginMethod.BROWSER_IMPORT.value)
+        self.assertEqual(status.browser, "chrome")
+        self.assertEqual(status.storefront, "us")
+        self.assertEqual(status.last_error, "Apple Music 登录已失效，请重新登录。")
+        self.assertFalse(self.paths.token_fallback_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

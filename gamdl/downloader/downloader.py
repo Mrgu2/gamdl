@@ -63,6 +63,8 @@ class AppleMusicDownloader:
         self,
         media_metadata: dict,
         playlist_metadata: dict = None,
+        source_context: str | None = None,
+        artist_folder_name: str | None = None,
     ) -> DownloadItem:
         if self.flat_filter:
             flat_filter_result = self.flat_filter(media_metadata)
@@ -73,18 +75,24 @@ class AppleMusicDownloader:
                 return DownloadItem(
                     media_metadata=media_metadata,
                     playlist_metadata=playlist_metadata,
+                    source_context=source_context,
+                    artist_folder_name=artist_folder_name,
                     flat_filter_result=flat_filter_result,
                 )
 
         return await self.get_single_download_item_no_filter(
             media_metadata,
             playlist_metadata,
+            source_context,
+            artist_folder_name,
         )
 
     async def get_single_download_item_no_filter(
         self,
         media_metadata: dict,
         playlist_metadata: dict = None,
+        source_context: str | None = None,
+        artist_folder_name: str | None = None,
     ) -> DownloadItem:
         try:
             if not self.base_downloader.is_media_streamable(
@@ -99,6 +107,8 @@ class AppleMusicDownloader:
                 download_item = await self.song_downloader.get_download_item(
                     media_metadata,
                     playlist_metadata,
+                    source_context=source_context,
+                    artist_folder_name=artist_folder_name,
                 )
 
             if media_metadata["type"] in MUSIC_VIDEO_MEDIA_TYPE:
@@ -121,6 +131,8 @@ class AppleMusicDownloader:
             download_item = DownloadItem(
                 media_metadata=media_metadata,
                 playlist_metadata=playlist_metadata,
+                source_context=source_context,
+                artist_folder_name=artist_folder_name,
                 error=e,
             )
 
@@ -177,12 +189,19 @@ class AppleMusicDownloader:
             artist_auto_select = self.artist_auto_select
 
         relation_key, type_key = artist_auto_select.path_key
-        async for extended_data in self.interface.apple_music_api.extend_api_data(
-            artist_metadata[relation_key][type_key],
-        ):
-            artist_metadata[relation_key][type_key]["data"].extend(extended_data["data"])
+        artist_selection = (
+            artist_metadata.get(relation_key, {})
+            .get(type_key)
+        )
+        if not artist_selection or not artist_selection.get("data"):
+            return []
 
-        selected_items = artist_metadata[relation_key][type_key]["data"]
+        async for extended_data in self.interface.apple_music_api.extend_api_data(
+            artist_selection,
+        ):
+            artist_selection["data"].extend(extended_data["data"])
+
+        selected_items = artist_selection["data"]
         select_all = self.artist_auto_select is not None
 
         if artist_auto_select in {
@@ -200,6 +219,7 @@ class AppleMusicDownloader:
             return await self.get_artist_songs_download_items(
                 selected_items,
                 select_all,
+                artist_metadata["attributes"]["name"],
             )
         elif artist_auto_select == ArtistAutoSelect.MUSIC_VIDEOS:
             return await self.get_artist_music_videos_download_items(
@@ -299,6 +319,7 @@ class AppleMusicDownloader:
         self,
         songs_metadata: list[dict],
         select_all: bool = False,
+        artist_folder_name: str | None = None,
     ) -> list[DownloadItem]:
         if not select_all:
             choices = [
@@ -328,6 +349,8 @@ class AppleMusicDownloader:
         song_tasks = [
             self.get_single_download_item(
                 song_metadata,
+                source_context="artist-top-songs",
+                artist_folder_name=artist_folder_name,
             )
             for song_metadata in selected
         ]
@@ -485,6 +508,8 @@ class AppleMusicDownloader:
                 download_item = await self.get_single_download_item_no_filter(
                     download_item.media_metadata,
                     download_item.playlist_metadata,
+                    download_item.source_context,
+                    download_item.artist_folder_name,
                 )
 
             if download_item.error:

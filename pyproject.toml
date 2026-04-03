@@ -1,6 +1,6 @@
 [project]
 name = "gamdl"
-version = "1.1.0"
+version = "1.1.1"
 description = "A desktop-focused Apple Music downloader fork with macOS and Windows builds."
 readme = "README.md"
 license = "MIT"
@@ -16,12 +16,13 @@ dependencies = [
     "keyring>=25.6.0",
     "m3u8>=6.0.0",
     "mutagen>=1.47.0",
-    "pillow>=12.0.0",
+    "pillow>=12.1.1",
     "pyobjc-framework-Cocoa>=11.0; sys_platform == 'darwin'",
     "pyobjc-framework-WebKit>=11.0; sys_platform == 'darwin'",
     "pywebview>=5.4",
-    "pywidevine>=1.8.0",
-    "yt-dlp>=2025.10.22",
+    "pywidevine>=1.9.0",
+    "socksio>=1.0.0",
+    "yt-dlp>=2026.2.21",
 ]
 
 [project.optional-dependencies]

@@ -8,6 +8,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from pywidevine import Cdm, Device
 from yt_dlp import YoutubeDL
 
+from ..network import NetworkConfig, httpx_client_kwargs, should_bypass_proxy
 from ..interface.enums import CoverFormat
 from ..interface.types import MediaTags, PlaylistTags
 from ..utils import CustomStringFormatter, async_subprocess
@@ -31,6 +32,7 @@ class AppleMusicBaseDownloader:
         mp4box_path: str = "MP4Box",
         use_wrapper: bool = False,
         wrapper_decrypt_ip: str = "127.0.0.1:10020",
+        network_config: NetworkConfig | None = None,
         download_mode: DownloadMode = DownloadMode.YTDLP,
         cover_format: CoverFormat = CoverFormat.JPG,
         album_folder_template: str = "{album_artist}/{album}",
@@ -58,6 +60,7 @@ class AppleMusicBaseDownloader:
         self.mp4box_path = mp4box_path
         self.use_wrapper = use_wrapper
         self.wrapper_decrypt_ip = wrapper_decrypt_ip
+        self.network_config = network_config
         self.download_mode = download_mode
         self.cover_format = cover_format
         self.album_folder_template = album_folder_template
@@ -177,12 +180,32 @@ class AppleMusicBaseDownloader:
 
         return sanitized_string.strip()
 
+    @staticmethod
+    def sanitize_string_without_truncate(dirty_string: str) -> str:
+        sanitized_string = re.sub(
+            ILLEGAL_CHARS_RE,
+            ILLEGAL_CHAR_REPLACEMENT,
+            dirty_string,
+        )
+        if sanitized_string.endswith("."):
+            sanitized_string = sanitized_string[:-1] + ILLEGAL_CHAR_REPLACEMENT
+        return sanitized_string.strip()
+
     def get_final_path(
         self,
         tags: MediaTags,
         file_extension: str,
         playlist_tags: PlaylistTags | None,
+        source_context: str | None = None,
+        artist_folder_name: str | None = None,
     ) -> str:
+        if source_context == "artist-top-songs":
+            return self._get_artist_top_songs_final_path(
+                tags,
+                file_extension,
+                artist_folder_name,
+            )
+
         if tags.album:
             template_folder_parts = (
                 self.compilation_folder_template.split("/")
@@ -202,10 +225,25 @@ class AppleMusicBaseDownloader:
             template_file_parts = self.no_album_file_template.split("/")
 
         template_parts = template_folder_parts + template_file_parts
+        formatted_parts = self._format_path_parts(
+            template_parts,
+            tags,
+            file_extension,
+            playlist_tags,
+        )
+        return str(Path(self.output_path, *formatted_parts))
+
+    def _format_path_parts(
+        self,
+        parts: list[str],
+        tags: MediaTags,
+        file_extension: str,
+        playlist_tags: PlaylistTags | None,
+    ) -> list[str]:
         formatted_parts = []
 
-        for i, part in enumerate(template_parts):
-            is_folder = i < len(template_parts) - 1
+        for i, part in enumerate(parts):
+            is_folder = i < len(parts) - 1
             formatted_part = CustomStringFormatter().format(
                 part,
                 album=(tags.album, "Unknown Album"),
@@ -246,7 +284,47 @@ class AppleMusicBaseDownloader:
             )
             formatted_parts.append(sanitized_formatted_part)
 
-        return str(Path(self.output_path, *formatted_parts))
+        return formatted_parts
+
+    def _get_artist_top_songs_final_path(
+        self,
+        tags: MediaTags,
+        file_extension: str,
+        artist_folder_name: str | None = None,
+    ) -> str:
+        # Top Songs intentionally flattens album structure under the artist.
+        # Keep the ID suffix intact even when truncate is enabled, so same-title tracks
+        # from different releases do not collapse into the same filename.
+        artist_root = self.sanitize_string(
+            artist_folder_name or tags.artist or "Unknown Artist",
+        )
+        filename = self._build_artist_top_songs_filename(tags, file_extension)
+        return str(Path(self.output_path, artist_root, "Top Songs", filename))
+
+    def _build_artist_top_songs_filename(
+        self,
+        tags: MediaTags,
+        file_extension: str,
+    ) -> str:
+        title = (tags.title or "Unknown Title").strip() or "Unknown Title"
+        title_id = tags.title_id if tags.title_id is not None else "Unknown Title ID"
+        # Keep the collision-avoidance suffix intact even if truncate is very small.
+        sanitized_suffix = self.sanitize_string_without_truncate(
+            f"[{title_id}]"
+        ) or "[Unknown Title ID]"
+        sanitized_title = self.sanitize_string_without_truncate(title)
+
+        separator = " "
+        if file_extension:
+            if self.truncate is not None:
+                max_title_len = max(
+                    1,
+                    self.truncate - len(file_extension) - len(separator) - len(sanitized_suffix),
+                )
+                sanitized_title = sanitized_title[:max_title_len].rstrip() or "Unknown"
+            return f"{sanitized_title}{separator}{sanitized_suffix}{file_extension}"
+
+        return f"{sanitized_title}{separator}{sanitized_suffix}"
 
     async def download_stream(self, stream_url: str, download_path: str):
         if self.download_mode == DownloadMode.YTDLP:
@@ -263,22 +341,30 @@ class AppleMusicBaseDownloader:
         )
 
     def _download_ytdlp(self, stream_url: str, download_path: str) -> None:
+        client_kwargs = httpx_client_kwargs(self.network_config)
+        ytdlp_options = {
+            "quiet": True,
+            "no_warnings": True,
+            "outtmpl": download_path,
+            "allow_unplayable_formats": True,
+            "overwrites": True,
+            "fixup": "never",
+            "noprogress": self.silent,
+            "allowed_extractors": ["generic"],
+        }
+        if client_kwargs.get("trust_env") is False and not should_bypass_proxy(stream_url):
+            ytdlp_options["proxy"] = client_kwargs.get("proxy", "")
+
         with YoutubeDL(
-            {
-                "quiet": True,
-                "no_warnings": True,
-                "outtmpl": download_path,
-                "allow_unplayable_formats": True,
-                "overwrites": True,
-                "fixup": "never",
-                "noprogress": self.silent,
-                "allowed_extractors": ["generic"],
-            }
+            ytdlp_options
         ) as ydl:
             ydl.download(stream_url)
 
     async def download_nm3u8dlre(self, stream_url: str, download_path: str):
         download_path_obj = Path(download_path)
+        network_config = self.network_config
+        if should_bypass_proxy(stream_url):
+            network_config = NetworkConfig(mode="direct", proxy_url="")
 
         download_path_obj.parent.mkdir(parents=True, exist_ok=True)
         await async_subprocess(
@@ -297,6 +383,7 @@ class AppleMusicBaseDownloader:
             "--tmp-dir",
             download_path_obj.parent,
             silent=self.silent,
+            network_config=network_config,
         )
 
     async def apply_tags(

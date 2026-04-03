@@ -140,7 +140,7 @@ class AppleMusicMusicVideoInterface(AppleMusicInterface):
             )
 
         playlist_master_m3u8_obj = m3u8.loads(
-            (await get_response(m3u8_master_url)).text
+            (await self._get_response(m3u8_master_url)).text
         )
         playlist_master_m3u8_obj.base_uri = m3u8_master_url.rpartition("/")[0]
         stream_info_video = await self.get_stream_info_video(
@@ -321,7 +321,7 @@ class AppleMusicMusicVideoInterface(AppleMusicInterface):
         stream_info.width, stream_info.height = playlist.stream_info.resolution
 
         playlist_m3u8_obj = m3u8.loads(
-            (await get_response(stream_info.stream_url)).text
+            (await self._get_response(stream_info.stream_url)).text
         )
         stream_info.widevine_pssh = self.get_widevine_pssh(playlist_m3u8_obj)
         stream_info.fairplay_key = self.get_fairplay_key(playlist_m3u8_obj)
@@ -348,7 +348,7 @@ class AppleMusicMusicVideoInterface(AppleMusicInterface):
         stream_info.codec = playlist["group_id"]
 
         playlist_m3u8_obj = m3u8.loads(
-            (await get_response(stream_info.stream_url)).text
+            (await self._get_response(stream_info.stream_url)).text
         )
         stream_info.widevine_pssh = self.get_widevine_pssh(playlist_m3u8_obj)
         stream_info.fairplay_key = self.get_fairplay_key(playlist_m3u8_obj)

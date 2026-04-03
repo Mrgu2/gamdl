@@ -6,6 +6,13 @@ import typing
 
 import httpx
 
+from .network import (
+    NetworkConfig,
+    build_subprocess_env,
+    httpx_client_kwargs,
+    should_bypass_proxy,
+)
+
 
 def raise_for_status(httpx_response: httpx.Response, valid_responses: set[int] = {200}):
     if httpx_response.status_code not in valid_responses:
@@ -24,14 +31,25 @@ def safe_json(httpx_response: httpx.Response) -> dict | None:
 async def get_response(
     url: str,
     valid_responses: set[int] = {200},
+    network_config: NetworkConfig | None = None,
 ) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    client_kwargs = httpx_client_kwargs(network_config)
+    if should_bypass_proxy(url):
+        client_kwargs = {"trust_env": False}
+    async with httpx.AsyncClient(
+        timeout=60.0,
+        **client_kwargs,
+    ) as client:
         response = await client.get(url)
         raise_for_status(response, valid_responses)
         return response
 
 
-async def async_subprocess(*args: str, silent: bool = False) -> None:
+async def async_subprocess(
+    *args: str,
+    silent: bool = False,
+    network_config: NetworkConfig | None = None,
+) -> None:
     if silent:
         additional_args = {
             "stdout": subprocess.DEVNULL,
@@ -42,6 +60,7 @@ async def async_subprocess(*args: str, silent: bool = False) -> None:
 
     proc = await asyncio.create_subprocess_exec(
         *args,
+        env=build_subprocess_env(network_config),
         **additional_args,
     )
     await proc.communicate()

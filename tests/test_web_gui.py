@@ -8,11 +8,13 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from gamdl.api.exceptions import ApiError
 from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus, resolve_executable
 from gamdl.downloader import GamdlError
 from gamdl.interface.types import PlaylistTags
@@ -25,7 +27,9 @@ from gamdl.web_gui import (
     WebGuiServer,
     build_download_command,
     classify_url,
+    create_server,
     parse_url_input,
+    validate_bind_host,
 )
 
 
@@ -62,8 +66,36 @@ class FakeAuthManager:
         self.session = SessionStatus(connected=False, last_error="已退出登录")
         return self.session
 
+    def invalidate_session(self, reason: str = "Apple Music 登录已失效，请重新登录。"):
+        self.session = SessionStatus(connected=False, last_error=reason)
+        return self.session
+
     def get_media_user_token(self):
         return "test-token"
+
+
+class WebGuiSecurityTests(unittest.TestCase):
+    def test_validate_bind_host_accepts_loopback_addresses(self):
+        self.assertEqual(validate_bind_host("127.0.0.1"), "127.0.0.1")
+        self.assertEqual(validate_bind_host("::1"), "::1")
+        self.assertEqual(validate_bind_host("localhost"), "localhost")
+
+    def test_validate_bind_host_rejects_non_loopback_addresses(self):
+        with self.assertRaisesRegex(ValueError, "仅允许绑定到本机回环地址"):
+            validate_bind_host("0.0.0.0")
+        with self.assertRaisesRegex(ValueError, "仅允许绑定到本机回环地址"):
+            validate_bind_host("192.168.1.10")
+
+    def test_create_server_rejects_non_loopback_host(self):
+        with self.assertRaisesRegex(ValueError, "仅允许绑定到本机回环地址"):
+            create_server("0.0.0.0", 8765)
+
+    def test_index_html_escapes_preview_values_before_innerhtml_render(self):
+        self.assertIn("<strong>${escapeHtml(item.label)}</strong>", INDEX_HTML)
+        self.assertIn("<span class=\"muted\">${escapeHtml(item.url)}</span>", INDEX_HTML)
+
+    def test_index_html_escapes_session_values_before_innerhtml_render(self):
+        self.assertIn("<div class=\"list-head\"><strong>${escapeHtml(label)}</strong><span class=\"muted\">${escapeHtml(value)}</span></div>", INDEX_HTML)
 
 
 class FakeDownloadResult:
@@ -160,6 +192,8 @@ class FakeDownloadItem:
     media_type: str = "song"
     title: str = "Test Song"
     url: str | None = None
+    source_context: str | None = None
+    artist_folder_name: str | None = None
     playlist_metadata: dict | None = None
     playlist_tags: PlaylistTags | None = None
     sidecar_failures: list[dict[str, str | None]] | None = None
@@ -231,6 +265,11 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("打开下载目录", INDEX_HTML)
         self.assertIn("显示文件位置", INDEX_HTML)
         self.assertIn('id="open-file-application"', INDEX_HTML)
+        self.assertIn('id="network-mode"', INDEX_HTML)
+        self.assertIn('id="proxy-url"', INDEX_HTML)
+        self.assertIn("自动（推荐）", INDEX_HTML)
+        self.assertIn("如果你电脑开了代理工具，下载偶尔失败时，可以切到“直连”试试。", INDEX_HTML)
+        self.assertIn("syncNetworkModeControls", INDEX_HTML)
         self.assertIn('id="save-playlist"', INDEX_HTML)
         self.assertIn("payload.save_playlist = document.getElementById('save-playlist').value === 'true';", INDEX_HTML)
         self.assertIn("finder-menu", INDEX_HTML)
@@ -304,6 +343,9 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("function revealMeasuredOpenWithMenu(jobId)", INDEX_HTML)
         self.assertIn("menu.classList.add('measuring');", INDEX_HTML)
         self.assertIn("menu.classList.remove('measuring');", INDEX_HTML)
+        self.assertIn("<strong>${escapeHtml(item.label)}</strong>", INDEX_HTML)
+        self.assertIn('<span class="muted">${escapeHtml(item.url)}</span>', INDEX_HTML)
+        self.assertIn("<strong>${escapeHtml(label)}</strong><span class=\"muted\">${escapeHtml(value)}</span>", INDEX_HTML)
         self.assertNotIn('id="open-with-menu-${job.id}"', INDEX_HTML)
         self.assertIn('data-theme="warm"', INDEX_HTML)
         self.assertIn('body[data-theme="cool"]', INDEX_HTML)
@@ -432,6 +474,9 @@ class WebGuiApiTests(unittest.TestCase):
         self.thread.start()
         host, port = self.server.server_address
         self.base_url = f"http://{host}:{port}"
+        # Security tests must hit the loopback server directly instead of inheriting
+        # any system proxy that could turn a local request into an upstream 502.
+        self.url_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -440,7 +485,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def _get_json(self, path: str) -> dict:
-        with urllib.request.urlopen(f"{self.base_url}{path}") as response:
+        with self.url_opener.open(f"{self.base_url}{path}") as response:
             return json.load(response)
 
     def _post_json(self, path: str, payload: dict) -> dict:
@@ -453,7 +498,7 @@ class WebGuiApiTests(unittest.TestCase):
             },
             method="POST",
         )
-        with urllib.request.urlopen(request) as response:
+        with self.url_opener.open(request) as response:
             return json.load(response)
 
     def _post_json_error(self, path: str, payload: dict) -> tuple[int, dict]:
@@ -467,7 +512,7 @@ class WebGuiApiTests(unittest.TestCase):
             method="POST",
         )
         with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(request)
+            self.url_opener.open(request)
         return error.exception.code, json.loads(error.exception.read().decode("utf-8"))
 
     def test_post_rejects_missing_local_request_token(self):
@@ -479,10 +524,22 @@ class WebGuiApiTests(unittest.TestCase):
         )
 
         with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(request)
+            self.url_opener.open(request)
 
         self.assertEqual(error.exception.code, 403)
         self.assertIn("本地会话令牌", error.exception.read().decode("utf-8"))
+
+    def test_get_rejects_non_loopback_host_header(self):
+        request = urllib.request.Request(
+            f"{self.base_url}/",
+            headers={"Host": "evil.example"},
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.url_opener.open(request)
+
+        self.assertEqual(error.exception.code, 403)
+        self.assertIn("本机回环地址", error.exception.read().decode("utf-8"))
 
     def test_post_rejects_non_json_content_type(self):
         request = urllib.request.Request(
@@ -496,13 +553,13 @@ class WebGuiApiTests(unittest.TestCase):
         )
 
         with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(request)
+            self.url_opener.open(request)
 
         self.assertEqual(error.exception.code, 415)
         self.assertIn("application/json", error.exception.read().decode("utf-8"))
 
     def test_get_index_injects_runtime_request_token(self):
-        with urllib.request.urlopen(f"{self.base_url}/") as response:
+        with self.url_opener.open(f"{self.base_url}/") as response:
             html = response.read().decode("utf-8")
 
         self.assertIn(self.server.api_request_token, html)
@@ -523,6 +580,8 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(data["settings"]["theme"], "warm")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
+        self.assertEqual(data["settings"]["network_mode"], "auto")
+        self.assertEqual(data["settings"]["proxy_url"], "")
         self.assertEqual(data["settings"]["artist_auto_select"], "")
         self.assertIn("wrapper_status", data)
         self.assertTrue(data["wrapper_status"]["message"])
@@ -557,6 +616,8 @@ class WebGuiApiTests(unittest.TestCase):
                 "setup_completed": True,
                 "song_codec": "aac-legacy",
                 "theme": "cool",
+                "network_mode": "custom",
+                "proxy_url": "http://127.0.0.1:7890",
                 "use_wrapper": False,
                 "wrapper_decrypt_ip": "127.0.0.1:10022",
                 "artist_auto_select": "top-songs",
@@ -571,6 +632,8 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertTrue(data["settings"]["setup_completed"])
         self.assertEqual(data["settings"]["song_codec"], "aac-legacy")
         self.assertEqual(data["settings"]["theme"], "cool")
+        self.assertEqual(data["settings"]["network_mode"], "custom")
+        self.assertEqual(data["settings"]["proxy_url"], "http://127.0.0.1:7890")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
         self.assertEqual(data["settings"]["artist_auto_select"], "")
@@ -601,6 +664,21 @@ class WebGuiApiTests(unittest.TestCase):
         )
         data = self._get_json("/api/settings")
         self.assertEqual(data["settings"]["open_file_application"], "")
+
+    def test_post_settings_rejects_empty_custom_proxy(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        status, payload = self._post_json_error(
+            "/api/settings",
+            {
+                "output_path": str(remembered_path),
+                "network_mode": "custom",
+                "proxy_url": "",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["category"], "network")
+        self.assertIn("必须填写代理地址", payload["error"])
 
     def test_select_folder_returns_validated_path(self):
         data = self._post_json("/api/desktop/select-folder", {})
@@ -650,11 +728,64 @@ class WebGuiApiTests(unittest.TestCase):
                 {"wrapper_decrypt_ip": "127.0.0.1:10022"},
             )
 
-        ensure_running.assert_called_once_with("127.0.0.1:10022")
-        probe_status.assert_called_once_with("127.0.0.1:10022")
+        ensure_running.assert_called_once()
+        self.assertEqual(ensure_running.call_args.args[0], "127.0.0.1:10022")
+        self.assertEqual(ensure_running.call_args.args[1].mode, "auto")
+        probe_status.assert_called_once()
+        self.assertEqual(probe_status.call_args.args[0], "127.0.0.1:10022")
+        self.assertEqual(probe_status.call_args.args[1].mode, "auto")
         self.assertTrue(data["ok"])
         self.assertEqual(data["resolved_ip"], "127.0.0.1:10022")
         self.assertTrue(data["wrapper_status"]["available"])
+
+    def test_start_wrapper_uses_current_network_form_values(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        self.server.settings_store.save(
+            {
+                "output_path": str(remembered_path),
+                "network_mode": "auto",
+                "proxy_url": "",
+            }
+        )
+
+        with (
+            patch.object(
+                self.server.wrapper_manager,
+                "ensure_running",
+                return_value="127.0.0.1:10022",
+            ) as ensure_running,
+            patch.object(
+                self.server.wrapper_manager,
+                "probe_status",
+                return_value=SimpleNamespace(
+                    available=True,
+                    mode="docker",
+                    resolved_ip="127.0.0.1:10022",
+                    message="已检测到通过 Docker 运行的外部 wrapper。",
+                ),
+            ),
+        ):
+            self._post_json(
+                "/api/wrapper/start",
+                {
+                    "wrapper_decrypt_ip": "127.0.0.1:10022",
+                    "network_mode": "custom",
+                    "proxy_url": "http://127.0.0.1:7890",
+                },
+            )
+
+        self.assertEqual(ensure_running.call_args.args[1].mode, "custom")
+        self.assertEqual(ensure_running.call_args.args[1].proxy_url, "http://127.0.0.1:7890")
+
+    def test_start_wrapper_rejects_non_loopback_host(self):
+        code, payload = self._post_json_error(
+            "/api/wrapper/start",
+            {"wrapper_decrypt_ip": "203.0.113.10:10022"},
+        )
+
+        self.assertEqual(code, 400)
+        self.assertEqual(payload["category"], "filesystem")
+        self.assertIn("本机回环地址", payload["error"])
 
     def test_about_reports_distribution_audio_policy(self):
         data = self._get_json("/api/about")
@@ -702,6 +833,66 @@ class WebGuiApiTests(unittest.TestCase):
         bundle_path = Path(data["bundle_path"])
         self.assertTrue(bundle_path.exists())
         self.assertEqual(bundle_path.suffix, ".zip")
+
+    def test_diagnostics_export_redacts_proxy_credentials_and_tokens(self):
+        self.server.settings_store.save(
+            {
+                "output_path": str(self.paths.default_output_path),
+                "theme": "cool",
+                "network_mode": "custom",
+                "proxy_url": "http://alice:secret@127.0.0.1:7890",
+                "open_file_application": "VLC",
+                "browser_import_enabled": False,
+                "last_login_method": "browser-import",
+                "song_codec": "alac",
+                "use_wrapper": True,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+            }
+        )
+        self.server.log_store.channels["app"].append("Token: dev-secret-token")
+        self.server.log_store.channels["app"].append("token: lower-secret-token")
+        self.server.log_store.channels["app"].append("Authorization: bearer lower-bearer-token")
+        self.server.log_store.channels["auth"].append('media-user-token=auth-secret-token')
+        self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
+        (self.paths.logs_dir / "app.log").write_text(
+            "authorization: Bearer bearer-secret-token and Bearer second-secret-token\nAuthorization: bearer third-secret-token\nToken: one token: two",
+            encoding="utf-8",
+        )
+
+        data = self._post_json("/api/diagnostics/export", {})
+        bundle_path = Path(data["bundle_path"])
+
+        with zipfile.ZipFile(bundle_path) as archive:
+            settings_payload = json.loads(archive.read("settings.json").decode("utf-8"))
+            in_memory_logs = json.loads(archive.read("logs/in-memory.json").decode("utf-8"))
+            app_log = archive.read("logs/app.log").decode("utf-8")
+
+        self.assertEqual(settings_payload["proxy_url"], "http://***:***@127.0.0.1:7890")
+        self.assertEqual(
+            set(settings_payload),
+            {
+                "log_level",
+                "browser_import_enabled",
+                "last_login_method",
+                "song_codec",
+                "use_wrapper",
+                "wrapper_decrypt_ip",
+                "network_mode",
+                "proxy_url",
+            },
+        )
+        self.assertNotIn("output_path", settings_payload)
+        self.assertNotIn("theme", settings_payload)
+        self.assertNotIn("open_file_application", settings_payload)
+        self.assertNotIn("secret", json.dumps(in_memory_logs, ensure_ascii=False))
+        self.assertNotIn("lower-bearer-token", json.dumps(in_memory_logs, ensure_ascii=False))
+        self.assertIn("Token: ***", json.dumps(in_memory_logs, ensure_ascii=False))
+        self.assertIn("media-user-token=***", json.dumps(in_memory_logs, ensure_ascii=False))
+        self.assertNotIn("bearer-secret-token", app_log)
+        self.assertNotIn("second-secret-token", app_log)
+        self.assertNotIn("third-secret-token", app_log)
+        self.assertNotIn("token: two", app_log.lower())
+        self.assertIn("Bearer ***", app_log)
 
     def test_logs_endpoint_returns_folder_path(self):
         data = self._get_json("/api/logs")
@@ -870,6 +1061,43 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertEqual(job["result"]["errors"], 1)
         self.assertEqual(job["result"]["downloaded_items"], 0)
         self.assertEqual(job["result"]["output_path"], str(downloads_path))
+
+    def test_failed_download_job_invalid_auth_invalidates_session(self):
+        self.server.auth_manager.login_with_webview()
+        downloads_path = self.paths.app_support_dir / "downloads"
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            side_effect=ApiError(
+                '{"errors":[{"title":"Forbidden","detail":"Invalid authentication","status":"403","code":"40300"}]}',
+                403,
+            ),
+        ):
+            data = self._post_json(
+                "/api/jobs",
+                {
+                    "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
+                    "output_path": str(downloads_path),
+                    "overwrite": False,
+                    "save_cover": True,
+                    "log_level": "INFO",
+                },
+            )
+            job_id = data["id"]
+            for _ in range(30):
+                job = self._get_json(f"/api/jobs/{job_id}")
+                if job["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error_message"], "Apple Music 登录已失效，请重新登录。")
+        self.assertEqual(job["error_category"], "login")
+        self.assertEqual(job["result"]["errors"], 1)
+        self.assertFalse(self.server.auth_manager.get_session_status().connected)
+        self.assertEqual(
+            self.server.auth_manager.get_session_status().last_error,
+            "Apple Music 登录已失效，请重新登录。",
+        )
 
     def test_retry_failed_job_requeues_retryable_urls(self):
         self.server.auth_manager.login_with_webview()
@@ -1092,10 +1320,69 @@ class WebGuiApiTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_retry_failed_job_preserves_artist_top_songs_retry_context(self):
+        self.server.auth_manager.login_with_webview()
+        failed_job = Job(
+            id="job-retry-artist-top-songs",
+            urls=["https://music.apple.com/us/artist/test/1"],
+            url_preview=[{"kind": "artist", "supported": True, "valid": True}],
+            payload={
+                "output_path": str(self.paths.app_support_dir / "downloads"),
+                "overwrite": False,
+                "save_cover": True,
+                "save_playlist": False,
+                "log_level": "INFO",
+                "song_codec": "aac-legacy",
+                "use_wrapper": False,
+                "wrapper_decrypt_ip": "127.0.0.1:10022",
+                "artist_auto_select": "top-songs",
+            },
+            command=[],
+            status="failed",
+            result={
+                "errors": 1,
+                "failed_items": [
+                    {
+                        "title": "Track 1",
+                        "kind": "song",
+                        "source_url": "https://music.apple.com/us/artist/test/1",
+                        "retry_url": "https://music.apple.com/us/song/test-song/111",
+                        "retry_target": {
+                            "strategy": "song-context",
+                            "song_url": "https://music.apple.com/us/song/test-song/111",
+                            "source_context": "artist-top-songs",
+                            "artist_folder_name": "Artist A",
+                        },
+                        "error": "boom",
+                    }
+                ],
+            },
+        )
+        self._store_job(failed_job)
+
+        data = self._post_json("/api/jobs/job-retry-artist-top-songs/retry-failed", {})
+        retry_job = self._get_json(f"/api/jobs/{data['retry_job']['id']}")
+
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["retry_count"], 1)
+        self.assertEqual(
+            retry_job["payload"]["retry_items"],
+            [
+                {
+                    "title": "Track 1",
+                    "kind": "song",
+                    "source_url": "https://music.apple.com/us/artist/test/1",
+                    "strategy": "song-context",
+                    "song_url": "https://music.apple.com/us/song/test-song/111",
+                    "source_context": "artist-top-songs",
+                    "artist_folder_name": "Artist A",
+                }
+            ],
+        )
         self.assertEqual(
             retry_job["urls"],
             [
-                "https://music.apple.com/us/song/test-song/111",
                 "https://music.apple.com/us/song/test-song/111",
             ],
         )
@@ -1638,6 +1925,56 @@ class DownloadServiceTests(unittest.TestCase):
         finally:
             tempdir.cleanup()
 
+    def test_run_preserves_artist_top_songs_context_for_track_failures(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_downloader = FakeDownloader(
+                [
+                    FakeDownloadItem(
+                        final_path=str(Path(tempdir.name) / "missing" / "Track 1.m4a"),
+                        media_type="song",
+                        title="Track 1",
+                        url="https://music.apple.com/us/song/track-1/123",
+                        source_context="artist-top-songs",
+                        artist_folder_name="Artist A",
+                        error=Exception("boom"),
+                    )
+                ]
+            )
+
+            class ArtistTrackFailureDownloader(FakeDownloader):
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="artist")
+
+            fake_downloader = ArtistTrackFailureDownloader(fake_downloader.queue_items)
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/artist/test/1"],
+                            output_path=str(Path(tempdir.name) / "downloads"),
+                            artist_auto_select="top-songs",
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 1)
+            self.assertEqual(len(result.failed_items), 1)
+            self.assertEqual(
+                result.failed_items[0]["retry_target"],
+                {
+                    "strategy": "song-context",
+                    "song_url": "https://music.apple.com/us/song/track-1/123",
+                    "source_context": "artist-top-songs",
+                    "artist_folder_name": "Artist A",
+                },
+            )
+        finally:
+            tempdir.cleanup()
+
     def test_run_falls_back_to_playlist_url_for_track_failures_without_song_url(self):
         tempdir = tempfile.TemporaryDirectory()
         try:
@@ -2003,6 +2340,109 @@ class DownloadServiceTests(unittest.TestCase):
             self.assertEqual(
                 playlist_file_path.read_text(encoding="utf-8").splitlines(),
                 ["", "Tracks/Track 1.m4a"],
+            )
+        finally:
+            tempdir.cleanup()
+
+    def test_run_retries_artist_top_songs_track_with_preserved_context(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            downloads_path = Path(tempdir.name) / "downloads"
+            song_url = "https://music.apple.com/us/song/test-song/111"
+            song_metadata = {
+                "id": "111",
+                "type": "song",
+                "attributes": {
+                    "name": "Track 1",
+                    "url": song_url,
+                },
+            }
+
+            class RetryDownloader:
+                def __init__(self):
+                    self.interface = SimpleNamespace(apple_music_api=RetryApi())
+                    self.calls = []
+
+                def get_url_info(self, _url):
+                    return FakeUrlInfo(type="song", id="111")
+
+                async def get_single_download_item(
+                    self,
+                    song_metadata_arg,
+                    playlist_metadata=None,
+                    source_context=None,
+                    artist_folder_name=None,
+                ):
+                    self.calls.append(
+                        {
+                            "song_metadata": song_metadata_arg,
+                            "playlist_metadata": playlist_metadata,
+                            "source_context": source_context,
+                            "artist_folder_name": artist_folder_name,
+                        }
+                    )
+                    final_path = downloads_path / "Artist A" / "Top Songs" / "Track 1 [111].m4a"
+                    return SimpleNamespace(
+                        media_metadata=song_metadata_arg,
+                        playlist_metadata=None,
+                        playlist_tags=None,
+                        final_path=str(final_path),
+                        source_context=source_context,
+                        artist_folder_name=artist_folder_name,
+                        error=None,
+                        sidecar_failures=[],
+                    )
+
+                async def download(self, download_item):
+                    final_path = Path(download_item.final_path)
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    final_path.write_text("audio", encoding="utf-8")
+
+            class RetryApi:
+                storefront = "us"
+
+                async def get_song(self, song_id):
+                    return {"data": [{**song_metadata, "id": song_id}]}
+
+            fake_downloader = RetryDownloader()
+
+            with patch.object(service, "_create_downloader", new=AsyncMock(return_value=fake_downloader)):
+                result = asyncio.run(
+                    service.run(
+                        DownloadJob(
+                            urls=["https://music.apple.com/us/artist/test/1"],
+                            output_path=str(downloads_path),
+                            artist_auto_select="top-songs",
+                            retry_items=[
+                                {
+                                    "title": "Track 1",
+                                    "kind": "song",
+                                    "source_url": "https://music.apple.com/us/artist/test/1",
+                                    "strategy": "song-context",
+                                    "song_url": song_url,
+                                    "source_context": "artist-top-songs",
+                                    "artist_folder_name": "Artist A",
+                                }
+                            ],
+                        )
+                    )
+                )
+
+            self.assertEqual(result.errors, 0)
+            self.assertEqual(result.downloaded_items, 1)
+            self.assertEqual(result.processed_urls, 1)
+            self.assertEqual(
+                fake_downloader.calls[0]["source_context"],
+                "artist-top-songs",
+            )
+            self.assertEqual(
+                fake_downloader.calls[0]["artist_folder_name"],
+                "Artist A",
+            )
+            self.assertTrue(
+                (downloads_path / "Artist A" / "Top Songs" / "Track 1 [111].m4a").exists()
             )
         finally:
             tempdir.cleanup()

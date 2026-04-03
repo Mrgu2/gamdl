@@ -10,6 +10,7 @@ from httpx import ConnectError
 
 from .. import __version__
 from ..api import AppleMusicApi, ItunesApi
+from ..network import normalize_network_config
 from ..downloader import (
     AppleMusicBaseDownloader,
     AppleMusicDownloader,
@@ -52,6 +53,13 @@ def make_sync(func):
 @make_sync
 async def main(config: CliConfig):
     colorama.just_fix_windows_console()
+    try:
+        network_config = normalize_network_config(
+            config.network_mode,
+            config.proxy_url,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     root_logger = logging.getLogger(__name__.split(".")[0])
     root_logger.setLevel(config.log_level)
@@ -73,6 +81,7 @@ async def main(config: CliConfig):
             apple_music_api = await AppleMusicApi.create_from_wrapper(
                 wrapper_account_url=config.wrapper_account_url,
                 language=config.language,
+                network_config=network_config,
             )
         except ConnectError:
             logger.critical(
@@ -85,11 +94,13 @@ async def main(config: CliConfig):
         apple_music_api = await AppleMusicApi.create_from_netscape_cookies(
             cookies_path=cookies_path,
             language=config.language,
+            network_config=network_config,
         )
 
     itunes_api = ItunesApi(
         apple_music_api.storefront,
         apple_music_api.language,
+        network_config=network_config,
     )
 
     if not apple_music_api.active_subscription:
@@ -125,6 +136,7 @@ async def main(config: CliConfig):
         mp4box_path=config.mp4box_path,
         use_wrapper=config.use_wrapper,
         wrapper_decrypt_ip=config.wrapper_decrypt_ip,
+        network_config=network_config,
         download_mode=config.download_mode,
         cover_format=config.cover_format,
         album_folder_template=config.album_folder_template,

@@ -7,6 +7,7 @@ import click
 from dataclass_click import argument, option
 
 from ..api import AppleMusicApi
+from ..network import ALLOWED_NETWORK_MODES
 from ..downloader import (
     AppleMusicBaseDownloader,
     AppleMusicDownloader,
@@ -136,6 +137,23 @@ class CliConfig:
             "-l",
             help="Metadata language",
             default=api_sig.parameters["language"].default,
+        ),
+    ]
+    network_mode: Annotated[
+        str,
+        option(
+            "--network-mode",
+            help="Network mode for requests and subprocesses",
+            default="auto",
+            type=click.Choice(list(ALLOWED_NETWORK_MODES)),
+        ),
+    ]
+    proxy_url: Annotated[
+        str,
+        option(
+            "--proxy-url",
+            help="Proxy URL used when network mode is custom",
+            default="",
         ),
     ]
     # Downloader specific options

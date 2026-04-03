@@ -77,6 +77,7 @@ class TokenStoreTests(unittest.TestCase):
         self.store._keyring = lambda: working_keyring  # type: ignore[method-assign]
 
         self.store.set("written-token")
+        self.assertFalse(self.paths.token_fallback_path.exists())
 
         token = self.store.get()
 
@@ -86,6 +87,20 @@ class TokenStoreTests(unittest.TestCase):
             "written-token",
         )
         self.assertFalse(self.paths.token_fallback_path.exists())
+
+    def test_set_removes_stale_fallback_file_when_keyring_write_succeeds(self):
+        working_keyring = _WorkingKeyring()
+        self.paths.ensure()
+        self.paths.token_fallback_path.write_text("stale-token", encoding="utf-8")
+        self.store._keyring = lambda: working_keyring  # type: ignore[method-assign]
+
+        self.store.set("written-token")
+
+        self.assertFalse(self.paths.token_fallback_path.exists())
+        self.assertEqual(
+            working_keyring.get_password("gamdl.desktop", "media-user-token"),
+            "written-token",
+        )
 
     def test_get_returns_cached_token_when_keyring_read_temporarily_fails(self):
         class _ReadFailKeyring(_WorkingKeyring):
@@ -100,9 +115,9 @@ class TokenStoreTests(unittest.TestCase):
         token = self.store.get()
 
         self.assertEqual(token, "written-token")
-        self.assertTrue(self.paths.token_fallback_path.exists())
+        self.assertFalse(self.paths.token_fallback_path.exists())
 
-    def test_get_reads_ephemeral_fallback_after_restart_when_keyring_read_fails(self):
+    def test_get_returns_none_after_restart_when_keyring_read_fails_without_fallback(self):
         class _ReadFailKeyring(_WorkingKeyring):
             def get_password(self, service: str, username: str) -> str | None:
                 raise RuntimeError("boom-read")
@@ -116,8 +131,8 @@ class TokenStoreTests(unittest.TestCase):
 
         token = restarted_store.get()
 
-        self.assertEqual(token, "written-token")
-        self.assertTrue(self.paths.token_fallback_path.exists())
+        self.assertIsNone(token)
+        self.assertFalse(self.paths.token_fallback_path.exists())
 
     def test_set_writes_fallback_file_when_keyring_is_unavailable(self):
         self.store._keyring = lambda: None  # type: ignore[method-assign]

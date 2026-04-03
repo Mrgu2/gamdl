@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+from ..network import (
+    ALLOWED_NETWORK_MODES,
+    NETWORK_MODE_ERROR,
+    PROXY_URL_ERROR,
+    PROXY_URL_REQUIRED_ERROR,
+    SOCKS_PROXY_SUPPORT_ERROR,
+    normalize_network_config,
+)
 from .paths import AppPaths
 from .wrapper_manager import (
     default_wrapper_decrypt_ip,
@@ -24,15 +32,17 @@ BOOLEAN_KEYS = {
     "use_wrapper",
 }
 STRING_KEYS = {
+    "network_mode",
     "output_path",
     "log_level",
     "last_login_method",
     "open_file_application",
+    "proxy_url",
     "song_codec",
     "theme",
     "wrapper_decrypt_ip",
 }
-CLEARABLE_STRING_KEYS = {"open_file_application"}
+CLEARABLE_STRING_KEYS = {"open_file_application", "proxy_url"}
 ALLOWED_THEMES = {"warm", "cool"}
 DEFAULT_WRAPPER_DECRYPT_IP = default_wrapper_decrypt_ip()
 WRAPPER_DECRYPT_IP_ERROR = (
@@ -55,6 +65,8 @@ class AppSettings:
     theme: str = "warm"
     use_wrapper: bool = False
     wrapper_decrypt_ip: str = DEFAULT_WRAPPER_DECRYPT_IP
+    network_mode: str = "auto"
+    proxy_url: str = ""
     artist_auto_select: str = ""
 
 
@@ -109,6 +121,8 @@ class AppSettingsStore:
             sanitized.pop("song_codec")
         if "theme" in sanitized and sanitized["theme"] not in ALLOWED_THEMES:
             sanitized.pop("theme")
+        if "network_mode" in sanitized and sanitized["network_mode"] not in ALLOWED_NETWORK_MODES:
+            sanitized.pop("network_mode")
         if "wrapper_decrypt_ip" in sanitized:
             try:
                 sanitized["wrapper_decrypt_ip"] = self._validate_wrapper_decrypt_ip(
@@ -116,6 +130,17 @@ class AppSettingsStore:
                 )
             except ValueError:
                 sanitized.pop("wrapper_decrypt_ip")
+        try:
+            defaults = self.defaults()
+            normalized_network = normalize_network_config(
+                sanitized.get("network_mode", defaults.network_mode),
+                sanitized.get("proxy_url", defaults.proxy_url),
+            )
+            sanitized["network_mode"] = normalized_network.mode
+            sanitized["proxy_url"] = normalized_network.proxy_url
+        except ValueError:
+            sanitized.pop("network_mode", None)
+            sanitized.pop("proxy_url", None)
         return sanitized
 
     @staticmethod
@@ -131,6 +156,9 @@ class AppSettingsStore:
         if not parsed_host.is_loopback:
             raise ValueError(WRAPPER_LOCALHOST_ONLY_ERROR)
         return normalized
+
+    def validate_wrapper_decrypt_ip(self, wrapper_decrypt_ip: str) -> str:
+        return self._validate_wrapper_decrypt_ip(wrapper_decrypt_ip)
 
     def load(self) -> AppSettings:
         defaults = self.defaults()
@@ -148,6 +176,28 @@ class AppSettingsStore:
         return AppSettings(**payload)
 
     def save(self, payload: dict[str, Any]) -> AppSettings:
+        if "network_mode" in payload or "proxy_url" in payload:
+            current = self.load()
+            try:
+                normalized_network = normalize_network_config(
+                    payload.get("network_mode", current.network_mode),
+                    payload.get("proxy_url", current.proxy_url),
+                )
+            except ValueError as exc:
+                message = str(exc)
+                if message in {
+                    NETWORK_MODE_ERROR,
+                    PROXY_URL_REQUIRED_ERROR,
+                    SOCKS_PROXY_SUPPORT_ERROR,
+                }:
+                    raise ValueError(message) from exc
+                raise ValueError(PROXY_URL_ERROR) from exc
+            payload = {
+                **payload,
+                "network_mode": normalized_network.mode,
+                "proxy_url": normalized_network.proxy_url,
+            }
+
         if isinstance(payload.get("wrapper_decrypt_ip"), str):
             wrapper_decrypt_ip = payload["wrapper_decrypt_ip"].strip()
             if wrapper_decrypt_ip:

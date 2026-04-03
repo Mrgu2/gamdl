@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..api import AppleMusicApi, ItunesApi
+from ..network import NetworkConfig, normalize_network_config
 from ..downloader import (
     AppleMusicBaseDownloader,
     AppleMusicDownloader,
@@ -53,6 +54,8 @@ class DownloadJob:
     song_codec: str = SongCodec.AAC_LEGACY.value
     use_wrapper: bool = False
     wrapper_decrypt_ip: str = "127.0.0.1:10022"
+    network_mode: str = "auto"
+    proxy_url: str = ""
     artist_auto_select: str | None = None
     retry_items: list[dict[str, Any]] = field(default_factory=list)
 
@@ -87,6 +90,10 @@ class DownloadService:
         self.paths.ensure()
         self.wrapper_manager = WrapperManager()
 
+    @staticmethod
+    def _network_config(job: DownloadJob) -> NetworkConfig:
+        return normalize_network_config(job.network_mode, job.proxy_url)
+
     def _emit(self, message: str) -> None:
         logger.info(message)
         if self.log_callback:
@@ -104,26 +111,32 @@ class DownloadService:
                 "当前所选音质需要外部 wrapper。"
                 " 请先启动外部 wrapper，或切回 AAC。"
             )
+        network_config = self._network_config(job)
         if job.use_wrapper and not codec.is_legacy():
             resolved_ip = await asyncio.to_thread(
                 self.wrapper_manager.ensure_running,
                 job.wrapper_decrypt_ip,
+                network_config,
             )
             if resolved_ip != job.wrapper_decrypt_ip:
                 self._emit(
                     f"已自动连接到 wrapper：{resolved_ip}（原设置为 {job.wrapper_decrypt_ip}）"
                 )
                 job.wrapper_decrypt_ip = resolved_ip
-
         apple_music_api = await AppleMusicApi.create(
             storefront=None,
             language=job.language,
             media_user_token=self.media_user_token,
+            network_config=network_config,
         )
         if not apple_music_api.active_subscription:
             raise RuntimeError("当前账号没有可用的 Apple Music 订阅。")
 
-        itunes_api = ItunesApi(apple_music_api.storefront, apple_music_api.language)
+        itunes_api = ItunesApi(
+            apple_music_api.storefront,
+            apple_music_api.language,
+            network_config=network_config,
+        )
         interface = AppleMusicInterface(apple_music_api, itunes_api)
         song_interface = AppleMusicSongInterface(interface)
         base_downloader = AppleMusicBaseDownloader(
@@ -134,6 +147,7 @@ class DownloadService:
             save_playlist=job.save_playlist,
             use_wrapper=job.use_wrapper,
             wrapper_decrypt_ip=job.wrapper_decrypt_ip,
+            network_config=network_config,
         )
         song_downloader = AppleMusicSongDownloader(
             base_downloader=base_downloader,
@@ -192,6 +206,15 @@ class DownloadService:
             strategy = _retry_target_strategy(retry_item)
             if strategy == "playlist-track":
                 await self._process_playlist_retry_item(
+                    downloader,
+                    result,
+                    retry_item,
+                    index,
+                    len(job.retry_items),
+                )
+                continue
+            if strategy == "song-context":
+                await self._process_contextual_song_retry_item(
                     downloader,
                     result,
                     retry_item,
@@ -316,6 +339,68 @@ class DownloadService:
             prefix,
             source_url=song_url,
             source_kind="playlist",
+        )
+
+    async def _process_contextual_song_retry_item(
+        self,
+        downloader: AppleMusicDownloader,
+        result: DownloadResult,
+        retry_item: dict[str, Any],
+        index: int,
+        total: int,
+    ) -> None:
+        song_url = _retry_target_url(retry_item)
+        prefix = f"[Retry {index}/{total}]"
+        self._emit(f'{prefix} 正在重试上下文单曲 "{song_url}"')
+
+        if not song_url:
+            result.errors += 1
+            result.failed_items.append(
+                _build_failed_retry_entry(retry_item, ValueError("缺少可重试的歌曲链接。"))
+            )
+            self._emit(f"{prefix} 重试失败: 缺少可重试的歌曲链接。")
+            return
+
+        source_context = _retry_source_context(retry_item)
+        if not source_context:
+            result.errors += 1
+            result.failed_items.append(
+                _build_failed_retry_entry(retry_item, ValueError("缺少下载上下文，无法按原目录规则重试。"))
+            )
+            self._emit(f"{prefix} 重试失败: 缺少下载上下文，无法按原目录规则重试。")
+            return
+
+        try:
+            url_info = downloader.get_url_info(song_url)
+            self._validate_url_kind(url_info)
+            if _url_info_kind(url_info) not in SONG_MEDIA_TYPE:
+                raise ValueError("上下文单曲补漏仅支持单曲链接。")
+            song_id = getattr(url_info, "sub_id", None) or getattr(url_info, "id", None)
+            if not song_id:
+                raise ValueError("无法解析失败歌曲的 song id。")
+            song_response = await downloader.interface.apple_music_api.get_song(song_id)
+            song_data = (song_response or {}).get("data") or []
+            if not song_data:
+                raise ValueError("无法获取失败歌曲的元数据。")
+            download_item = await downloader.get_single_download_item(
+                song_data[0],
+                source_context=source_context,
+                artist_folder_name=_retry_artist_folder_name(retry_item),
+            )
+        except Exception as exc:
+            result.errors += 1
+            result.failed_items.append(_build_failed_retry_entry(retry_item, exc))
+            self._emit(f"{prefix} 重试失败: {exc}")
+            return
+
+        result.processed_urls += 1
+        await self._process_download_item(
+            downloader,
+            result,
+            download_item,
+            prefix,
+            source_url=song_url,
+            source_kind="song",
         )
 
     async def _process_download_item(
@@ -451,7 +536,15 @@ def _build_failed_item_entry(
     kind = metadata.get("type") or source_kind or "unknown"
     retry_target = None
     playlist_tags = getattr(download_item, "playlist_tags", None)
-    if kind in SONG_MEDIA_TYPE and attributes.get("url") and playlist_tags:
+    source_context = getattr(download_item, "source_context", None)
+    artist_folder_name = getattr(download_item, "artist_folder_name", None)
+    if kind in SONG_MEDIA_TYPE and attributes.get("url") and source_context:
+        retry_target = _build_song_context_retry_target(
+            attributes["url"],
+            source_context,
+            artist_folder_name,
+        )
+    elif kind in SONG_MEDIA_TYPE and attributes.get("url") and playlist_tags:
         retry_target = _build_playlist_track_retry_target(attributes["url"], playlist_tags)
     elif kind in SONG_MEDIA_TYPE and attributes.get("url"):
         retry_target = _build_url_retry_target(attributes["url"])
@@ -490,6 +583,22 @@ def _build_playlist_track_retry_target(
     }
 
 
+def _build_song_context_retry_target(
+    song_url: str,
+    source_context: str,
+    artist_folder_name: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "strategy": "song-context",
+        "song_url": str(song_url).strip(),
+        "source_context": str(source_context).strip(),
+    }
+    normalized_artist_folder_name = str(artist_folder_name or "").strip()
+    if normalized_artist_folder_name:
+        payload["artist_folder_name"] = normalized_artist_folder_name
+    return payload
+
+
 def _retry_target_strategy(retry_target: dict[str, Any] | None) -> str:
     if not isinstance(retry_target, dict):
         return ""
@@ -502,6 +611,20 @@ def _retry_target_url(retry_target: dict[str, Any] | None) -> str | None:
     url = retry_target.get("song_url") or retry_target.get("url")
     normalized_url = str(url or "").strip()
     return normalized_url or None
+
+
+def _retry_source_context(retry_target: dict[str, Any] | None) -> str | None:
+    if not isinstance(retry_target, dict):
+        return None
+    normalized_context = str(retry_target.get("source_context") or "").strip()
+    return normalized_context or None
+
+
+def _retry_artist_folder_name(retry_target: dict[str, Any] | None) -> str | None:
+    if not isinstance(retry_target, dict):
+        return None
+    normalized_name = str(retry_target.get("artist_folder_name") or "").strip()
+    return normalized_name or None
 
 
 def _playlist_tags_from_dict(payload: Any) -> PlaylistTags | None:
@@ -526,6 +649,14 @@ def _build_failed_retry_entry(retry_item: dict[str, Any], error: Exception) -> d
         retry_target["song_url"] = retry_url
         if isinstance(retry_item.get("playlist_tags"), dict):
             retry_target["playlist_tags"] = dict(retry_item["playlist_tags"])
+    elif retry_target["strategy"] == "song-context":
+        retry_target["song_url"] = retry_url
+        source_context = _retry_source_context(retry_item)
+        if source_context:
+            retry_target["source_context"] = source_context
+        artist_folder_name = _retry_artist_folder_name(retry_item)
+        if artist_folder_name:
+            retry_target["artist_folder_name"] = artist_folder_name
     elif retry_url:
         retry_target["url"] = retry_url
     else:

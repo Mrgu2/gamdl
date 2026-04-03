@@ -2,6 +2,7 @@ import logging
 
 import httpx
 
+from ..network import NetworkConfig, httpx_client_kwargs
 from ..utils import safe_json
 from .constants import ITUNES_LOOKUP_API_URL, ITUNES_PAGE_API_URL, STOREFRONT_IDS
 from .exceptions import ApiError
@@ -14,9 +15,11 @@ class ItunesApi:
         self,
         storefront: str = "us",
         language: str = "en-US",
+        network_config: NetworkConfig | None = None,
     ) -> None:
         self.storefront = storefront
         self.language = language
+        self.network_config = network_config
         self.initialize()
 
     def initialize(self) -> None:
@@ -39,6 +42,7 @@ class ItunesApi:
                 "X-Apple-Store-Front": f"{self.storefront_id} t:music31",
             },
             timeout=60.0,
+            **httpx_client_kwargs(self.network_config),
         )
 
     async def get_lookup_result(

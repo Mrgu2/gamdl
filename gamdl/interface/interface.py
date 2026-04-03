@@ -96,6 +96,17 @@ class AppleMusicInterface:
             ),
         )
 
+    async def _get_response(
+        self,
+        url: str,
+        valid_responses: set[int] = {200},
+    ):
+        return await get_response(
+            url,
+            valid_responses,
+            network_config=getattr(self.apple_music_api, "network_config", None),
+        )
+
     def _resolve_cover_size(
         self,
         metadata: dict,
@@ -159,7 +170,7 @@ class AppleMusicInterface:
 
     @alru_cache()
     async def get_cover_bytes(self, cover_url: str) -> bytes | None:
-        response = await get_response(cover_url, {200, 404})
+        response = await self._get_response(cover_url, {200, 404})
         if response.status_code == 200:
             return response.content
         return None

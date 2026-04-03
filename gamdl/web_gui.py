@@ -12,11 +12,23 @@ import webbrowser
 from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 from . import __version__
+from .api.exceptions import ApiError
+from .network import (
+    NETWORK_MODE_ERROR,
+    NetworkConfig,
+    PROXY_URL_ERROR,
+    PROXY_URL_REQUIRED_ERROR,
+    SOCKS_PROXY_SUPPORT_ERROR,
+    add_network_guidance,
+    is_network_error,
+    normalize_network_config,
+)
 from .app import (
     AppLogStore,
     AppPaths,
@@ -47,6 +59,7 @@ API_REQUEST_TOKEN_HEADER = "X-Gamdl-Request-Token"
 API_REQUEST_TOKEN_PLACEHOLDER = "__GAMDL_API_REQUEST_TOKEN__"
 GUI_SETTINGS_DEFAULTS = AppSettingsStore(AppPaths()).defaults().__dict__
 SUPPORTED_BROWSER_IMPORTS = [browser.value for browser in BrowserType]
+INVALID_APPLE_MUSIC_AUTH_MESSAGE = "Apple Music 登录已失效，请重新登录。"
 SUPPORTED_DOWNLOAD_KINDS = {
     "song",
     "album",
@@ -66,6 +79,33 @@ SUPPORTED_ARTIST_AUTO_SELECT = {
         ArtistAutoSelect.ALL_ALBUMS,
     )
 }
+
+
+def validate_bind_host(host: str) -> str:
+    normalized = str(host or "").strip()
+    if not normalized:
+        raise ValueError("Host 不能为空。")
+    if normalized.lower() == "localhost":
+        return normalized
+    try:
+        parsed = ip_address(normalized)
+    except ValueError as exc:
+        raise ValueError("Web GUI 仅允许绑定到本机回环地址。") from exc
+    if not parsed.is_loopback:
+        raise ValueError("Web GUI 仅允许绑定到本机回环地址。")
+    return normalized
+
+
+def _is_loopback_hostname(host: str) -> bool:
+    normalized = str(host or "").strip()
+    if not normalized:
+        return False
+    if normalized.lower() == "localhost":
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def parse_url_input(text: str) -> list[str]:
@@ -126,6 +166,8 @@ def build_download_command(payload: dict[str, Any]) -> list[str]:
         "save_cover",
         "save_playlist",
         "log_level",
+        "network_mode",
+        "proxy_url",
         "song_codec",
         "artist_auto_select",
         "use_wrapper",
@@ -143,6 +185,10 @@ def build_conversion_command(payload: dict[str, Any]) -> list[str]:
         if key in payload:
             cmd.append(f"{key}={payload[key]}")
     return cmd
+
+
+def _network_config_from_settings(settings: AppSettings) -> NetworkConfig:
+    return normalize_network_config(settings.network_mode, settings.proxy_url)
 
 
 @dataclass
@@ -332,11 +378,13 @@ class JobManager:
             else:
                 raise RuntimeError(f"未知任务类型：{job.kind}")
         except Exception as exc:
-            job.append_log(str(exc))
+            error_category = _classify_error(exc)
+            error_message = add_network_guidance(str(exc), error_category)
+            job.append_log(error_message)
             job.status = "failed"
             job.return_code = 1
-            job.error_category = _classify_error(exc)
-            job.error_message = str(exc)
+            job.error_category = error_category
+            job.error_message = error_message
             if job.kind == "convert":
                 job.result = {
                     "total_files": 0,
@@ -365,21 +413,29 @@ class JobManager:
             log_callback=job.append_log,
             paths=self.paths,
         )
-        result = service.run_sync(
-            DownloadJob(
-                urls=job.urls,
-                output_path=job.payload["output_path"],
-                overwrite=job.payload["overwrite"],
-                save_cover=job.payload["save_cover"],
-                save_playlist=bool(job.payload.get("save_playlist")),
-                log_level=job.payload["log_level"],
-                song_codec=job.payload["song_codec"],
-                use_wrapper=job.payload["use_wrapper"],
-                wrapper_decrypt_ip=job.payload["wrapper_decrypt_ip"],
-                artist_auto_select=job.payload.get("artist_auto_select") or None,
-                retry_items=[dict(item) for item in job.payload.get("retry_items") or [] if isinstance(item, dict)],
+        try:
+            result = service.run_sync(
+                DownloadJob(
+                    urls=job.urls,
+                    output_path=job.payload["output_path"],
+                    overwrite=job.payload["overwrite"],
+                    save_cover=job.payload["save_cover"],
+                    save_playlist=bool(job.payload.get("save_playlist")),
+                    log_level=job.payload["log_level"],
+                    song_codec=job.payload["song_codec"],
+                    use_wrapper=job.payload["use_wrapper"],
+                    wrapper_decrypt_ip=job.payload["wrapper_decrypt_ip"],
+                    network_mode=job.payload.get("network_mode", "auto"),
+                    proxy_url=job.payload.get("proxy_url", ""),
+                    artist_auto_select=job.payload.get("artist_auto_select") or None,
+                    retry_items=[dict(item) for item in job.payload.get("retry_items") or [] if isinstance(item, dict)],
+                )
             )
-        )
+        except Exception as exc:
+            if _is_invalid_apple_music_auth_error(exc):
+                self.auth_manager.invalidate_session(INVALID_APPLE_MUSIC_AUTH_MESSAGE)
+                raise RuntimeError(INVALID_APPLE_MUSIC_AUTH_MESSAGE) from exc
+            raise
         job.result = result.to_dict()
         job.status = "completed" if result.errors == 0 else "failed"
         job.return_code = 0 if result.errors == 0 else 1
@@ -410,6 +466,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
     server_version = "gamdl-web/1.0"
 
     def do_GET(self) -> None:
+        if not self._verify_local_request():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send_html()
@@ -417,7 +475,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/settings":
             settings = self.server.settings_store.load()
             wrapper_status = self.server.wrapper_manager.probe_status(
-                settings.wrapper_decrypt_ip
+                settings.wrapper_decrypt_ip,
+                _network_config_from_settings(settings),
             )
             self._send_json(
                 {
@@ -470,7 +529,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                     "alac_mode": "external-wrapper-only",
                     "runtime": self.server.runtime().to_dict(),
                     "wrapper_status": self.server.wrapper_manager.probe_status(
-                        settings.wrapper_decrypt_ip
+                        settings.wrapper_decrypt_ip,
+                        _network_config_from_settings(settings),
                     ).__dict__,
                 }
             )
@@ -479,6 +539,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if not self._verify_local_request():
+            return
         if not self._verify_post_request():
             return
         try:
@@ -503,14 +565,26 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             try:
                 settings = self.server.settings_store.save(payload)
             except ValueError as exc:
-                self._send_json({"error": str(exc), "category": "filesystem"}, HTTPStatus.BAD_REQUEST)
+                category = (
+                    "network"
+                    if str(exc)
+                    in {
+                        NETWORK_MODE_ERROR,
+                        PROXY_URL_REQUIRED_ERROR,
+                        PROXY_URL_ERROR,
+                        SOCKS_PROXY_SUPPORT_ERROR,
+                    }
+                    else "filesystem"
+                )
+                self._send_json({"error": str(exc), "category": category}, HTTPStatus.BAD_REQUEST)
                 return
             self.server.set_log_level(settings.log_level)
             self._send_json(
                 {
                     "settings": settings.__dict__,
                     "wrapper_status": self.server.wrapper_manager.probe_status(
-                        settings.wrapper_decrypt_ip
+                        settings.wrapper_decrypt_ip,
+                        _network_config_from_settings(settings),
                     ).__dict__,
                     "runtime": self.server.runtime().to_dict(),
                 }
@@ -529,16 +603,32 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/wrapper/start":
-            requested_ip = payload.get(
-                "wrapper_decrypt_ip",
-                self.server.settings_store.load().wrapper_decrypt_ip,
-            )
+            settings = self.server.settings_store.load()
+            requested_ip = payload.get("wrapper_decrypt_ip", settings.wrapper_decrypt_ip)
             try:
-                resolved_ip = self.server.wrapper_manager.ensure_running(requested_ip)
-                wrapper_status = self.server.wrapper_manager.probe_status(resolved_ip)
+                requested_ip = self.server.settings_store.validate_wrapper_decrypt_ip(
+                    str(requested_ip or "").strip()
+                )
+                network_config = normalize_network_config(
+                    payload.get("network_mode", settings.network_mode),
+                    payload.get("proxy_url", settings.proxy_url),
+                )
+                resolved_ip = self.server.wrapper_manager.ensure_running(requested_ip, network_config)
+                wrapper_status = self.server.wrapper_manager.probe_status(resolved_ip, network_config)
             except ValueError as exc:
+                category = (
+                    "network"
+                    if str(exc)
+                    in {
+                        NETWORK_MODE_ERROR,
+                        PROXY_URL_REQUIRED_ERROR,
+                        PROXY_URL_ERROR,
+                        SOCKS_PROXY_SUPPORT_ERROR,
+                    }
+                    else "filesystem"
+                )
                 self._send_json(
-                    {"error": str(exc), "category": "filesystem"},
+                    {"error": str(exc), "category": category},
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -548,7 +638,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                         "error": str(exc),
                         "category": "wrapper",
                         "wrapper_status": self.server.wrapper_manager.probe_status(
-                            requested_ip
+                            requested_ip,
+                            network_config,
                         ).__dict__,
                     },
                     HTTPStatus.BAD_REQUEST,
@@ -643,8 +734,9 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                     language="zh-CN",
                 )
             except Exception as exc:
+                category = _classify_error(exc)
                 self._send_json(
-                    {"error": str(exc), "category": _classify_error(exc)},
+                    {"error": add_network_guidance(str(exc), category), "category": category},
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -662,8 +754,9 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                     language="zh-CN",
                 )
             except Exception as exc:
+                category = _classify_error(exc)
                 self._send_json(
-                    {"error": str(exc), "category": _classify_error(exc)},
+                    {"error": add_network_guidance(str(exc), category), "category": category},
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -705,6 +798,24 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("请求体不是合法 JSON。") from exc
+
+    def _verify_local_request(self) -> bool:
+        host_header = str(self.headers.get("Host") or "").strip()
+        if not host_header:
+            self._send_json({"error": "请求缺少 Host。"}, HTTPStatus.FORBIDDEN)
+            return False
+
+        hostname, _sep, _port = host_header.rpartition(":")
+        candidate_host = hostname if hostname else host_header
+        if candidate_host.startswith("[") and candidate_host.endswith("]"):
+            candidate_host = candidate_host[1:-1]
+        if not _is_loopback_hostname(candidate_host):
+            self._send_json(
+                {"error": "仅允许来自本机回环地址的请求。"},
+                HTTPStatus.FORBIDDEN,
+            )
+            return False
+        return True
 
     def _verify_post_request(self) -> bool:
         content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -925,6 +1036,31 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                     )
                     retry_urls.append(retry_url)
                     continue
+                source_context = str(retry_target.get("source_context") or "").strip()
+                artist_folder_name = str(retry_target.get("artist_folder_name") or "").strip()
+                if strategy == "song-context" and retry_url and source_context:
+                    dedupe_key = (
+                        strategy,
+                        retry_url,
+                        source_context,
+                        artist_folder_name,
+                    )
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    retry_item = {
+                        "title": item.get("title"),
+                        "kind": item.get("kind") or "song",
+                        "source_url": item.get("source_url"),
+                        "strategy": "song-context",
+                        "song_url": retry_url,
+                        "source_context": source_context,
+                    }
+                    if artist_folder_name:
+                        retry_item["artist_folder_name"] = artist_folder_name
+                    retry_items.append(retry_item)
+                    retry_urls.append(retry_url)
+                    continue
                 if strategy == "url" and retry_url:
                     dedupe_key = ("url", retry_url)
                     if dedupe_key in seen:
@@ -1045,8 +1181,9 @@ def create_server(
     input_folder_picker: Callable[[], str | None] | None = None,
     file_actions: DesktopFileActions | None = None,
 ) -> WebGuiServer:
+    validated_host = validate_bind_host(host)
     return WebGuiServer(
-        (host, port),
+        (validated_host, port),
         WebGuiHandler,
         paths or AppPaths(),
         log_store or AppLogStore(),
@@ -1087,6 +1224,10 @@ def main() -> None:
 
 def _classify_error(exc: Exception) -> str:
     message = str(exc).lower()
+    if is_network_error(exc):
+        return "network"
+    if _is_invalid_apple_music_auth_error(exc):
+        return "login"
     if "subscription" in message:
         return "session"
     if "permission" in message or "权限" in message:
@@ -1094,6 +1235,17 @@ def _classify_error(exc: Exception) -> str:
     if "login" in message or "token" in message or "登录" in message:
         return "login"
     return "download"
+
+
+def _is_invalid_apple_music_auth_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, ApiError) and current.status_code == 403:
+            message = str(current).lower()
+            if "invalid authentication" in message or "40300" in message:
+                return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 INDEX_HTML = """<!doctype html>
@@ -2816,6 +2968,19 @@ INDEX_HTML = """<!doctype html>
                 </select>
               </div>
             </div>
+            <div class="field">
+              <label for="network-mode">网络模式</label>
+              <select id="network-mode">
+                <option value="auto">自动（推荐）</option>
+                <option value="direct">直连</option>
+                <option value="custom">高级</option>
+              </select>
+              <div class="muted" id="network-mode-copy">如果你电脑开了代理工具，下载偶尔失败时，可以切到“直连”试试。</div>
+            </div>
+            <div class="field" id="proxy-url-field" hidden>
+              <label for="proxy-url">代理地址</label>
+              <input id="proxy-url" type="text" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:7890" />
+            </div>
             <div class="grid two">
               <div class="field">
                 <label for="use-wrapper">启用 wrapper</label>
@@ -3178,6 +3343,14 @@ docker stop wrapper-latest-10022</pre>
       }
     }
 
+    function syncNetworkModeControls() {
+      const networkMode = document.getElementById('network-mode')?.value || 'auto';
+      const proxyField = document.getElementById('proxy-url-field');
+      if (proxyField) {
+        proxyField.hidden = networkMode !== 'custom';
+      }
+    }
+
     function loginMethodLabel(session) {
       const method = String(session?.login_method || '').trim();
       if (method === 'webview') return '浏览器辅助登录';
@@ -3298,7 +3471,7 @@ docker stop wrapper-latest-10022</pre>
       }
       accountList.innerHTML = items.map(([label, value]) => `
         <div class="list-item">
-          <div class="list-head"><strong>${label}</strong><span class="muted">${value}</span></div>
+          <div class="list-head"><strong>${escapeHtml(label)}</strong><span class="muted">${escapeHtml(value)}</span></div>
         </div>
       `).join('');
       document.getElementById('setup-login-status').textContent = session.active_subscription
@@ -3321,8 +3494,8 @@ docker stop wrapper-latest-10022</pre>
       container.innerHTML = data.preview.map((item) => `
         <div class="preview-row">
           <span class="${item.supported ? 'badge success' : 'badge danger'}">${item.supported ? 'Supported' : 'Unsupported'}</span>
-          <strong>${item.label}</strong>
-          <span class="muted">${item.url}</span>
+          <strong>${escapeHtml(item.label)}</strong>
+          <span class="muted">${escapeHtml(item.url)}</span>
         </div>
       `).join('');
     }
@@ -3663,6 +3836,8 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('song-codec').value = settings.song_codec || 'aac-legacy';
       document.getElementById('theme-select').value = settings.theme || 'warm';
       document.getElementById('overwrite').value = String(settings.overwrite);
+      document.getElementById('network-mode').value = settings.network_mode || 'auto';
+      document.getElementById('proxy-url').value = settings.proxy_url || '';
       document.getElementById('use-wrapper').value = String(settings.use_wrapper);
       document.getElementById('wrapper-decrypt-ip').value = settings.wrapper_decrypt_ip || DEFAULT_WRAPPER_DECRYPT_IP;
       document.getElementById('artist-auto-select').value = settings.artist_auto_select || '';
@@ -3680,6 +3855,7 @@ docker stop wrapper-latest-10022</pre>
         button.title = browserImportMessage;
       });
       applyTheme(settings.theme || 'warm');
+      syncNetworkModeControls();
       if (!document.getElementById('convert-output-path').value.trim()) {
         document.getElementById('convert-output-path').value = settings.output_path || '';
       }
@@ -3988,6 +4164,8 @@ docker stop wrapper-latest-10022</pre>
         artist_auto_select: document.getElementById('artist-auto-select').value,
         theme: document.getElementById('theme-select').value,
         overwrite: document.getElementById('overwrite').value === 'true',
+        network_mode: document.getElementById('network-mode').value,
+        proxy_url: document.getElementById('proxy-url').value.trim(),
         use_wrapper: document.getElementById('use-wrapper').value === 'true',
         wrapper_decrypt_ip: document.getElementById('wrapper-decrypt-ip').value.trim(),
         open_file_application: document.getElementById('open-file-application').value.trim(),
@@ -4025,7 +4203,11 @@ docker stop wrapper-latest-10022</pre>
       const requestedIp = document.getElementById('wrapper-decrypt-ip').value.trim() || DEFAULT_WRAPPER_DECRYPT_IP;
       const data = await api('/api/wrapper/start', {
         method: 'POST',
-        body: JSON.stringify({ wrapper_decrypt_ip: requestedIp }),
+        body: JSON.stringify({
+          wrapper_decrypt_ip: requestedIp,
+          network_mode: document.getElementById('network-mode').value,
+          proxy_url: document.getElementById('proxy-url').value.trim(),
+        }),
       });
       document.getElementById('wrapper-decrypt-ip').value = data.resolved_ip || requestedIp;
       renderWrapperStatus(data.wrapper_status);
@@ -4203,6 +4385,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('select-convert-input-folder-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-input-folder', 'convert-input-path', '已选择输入目录')));
       document.getElementById('convert-input-mode').addEventListener('change', syncConvertMode);
       document.getElementById('theme-select').addEventListener('change', (event) => applyTheme(event.target.value));
+      document.getElementById('network-mode').addEventListener('change', syncNetworkModeControls);
       document.getElementById('login-webview-btn').addEventListener('click', () => runAction(loginWithWebview));
       document.getElementById('browser-import-btn').addEventListener('click', () => runAction(importFromBrowser));
       document.getElementById('setup-login-webview-btn').addEventListener('click', () => runAction(setupLoginWithWebview));

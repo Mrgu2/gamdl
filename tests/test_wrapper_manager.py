@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from gamdl.network import NetworkConfig
 from gamdl.app.wrapper_manager import (
     MAX_WRAPPER_DECRYPT_PORT,
     WrapperManager,
@@ -40,7 +41,7 @@ class WrapperManagerTests(unittest.TestCase):
     def test_probe_status_reports_missing_wrapper_without_docker(self):
         manager = WrapperManager()
         manager._ports_ready = lambda host, port: False
-        manager._docker_available = lambda: False
+        manager._docker_available = lambda network_config=None: False
         status = manager.probe_status("127.0.0.1:10022")
         self.assertFalse(status.available)
         self.assertEqual(status.mode, "none")
@@ -98,6 +99,31 @@ class WrapperManagerTests(unittest.TestCase):
             parse_wrapper_decrypt_ip(str(MAX_WRAPPER_DECRYPT_PORT + 1))
 
         self.assertIn(str(MAX_WRAPPER_DECRYPT_PORT), str(error.exception))
+
+    @patch("gamdl.app.wrapper_manager.subprocess.run")
+    def test_docker_available_clears_proxy_env_in_direct_mode(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0)
+
+        manager = WrapperManager()
+        manager._docker_available(NetworkConfig(mode="direct", proxy_url=""))
+
+        env = run_mock.call_args.kwargs["env"]
+        self.assertNotIn("http_proxy", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+
+    @patch("gamdl.app.wrapper_manager.subprocess.run")
+    def test_start_container_injects_proxy_env_in_custom_mode(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0)
+
+        manager = WrapperManager()
+        manager._start_container(
+            "wrapper-latest-10022",
+            NetworkConfig(mode="custom", proxy_url="http://127.0.0.1:7890"),
+        )
+
+        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(env["http_proxy"], "http://127.0.0.1:7890")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7890")
 
 
 if __name__ == "__main__":

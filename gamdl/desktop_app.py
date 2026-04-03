@@ -17,6 +17,7 @@ from gamdl.app import (
     configure_app_logging,
 )
 from gamdl.app.downloads import WRAPPER_REQUIRED_CODECS
+from gamdl.network import normalize_network_config
 from gamdl.interface import SongCodec
 from gamdl.macos_login_helper import capture_media_user_token
 from gamdl.web_gui import DEFAULT_HOST, DEFAULT_PORT, create_server
@@ -123,7 +124,10 @@ def main() -> None:
         codec.value for codec in WRAPPER_REQUIRED_CODECS
     }:
         try:
-            resolved_ip = WrapperManager().ensure_running(settings.wrapper_decrypt_ip)
+            resolved_ip = WrapperManager().ensure_running(
+                settings.wrapper_decrypt_ip,
+                normalize_network_config(settings.network_mode, settings.proxy_url),
+            )
             if resolved_ip != settings.wrapper_decrypt_ip:
                 settings = settings_store.save({"wrapper_decrypt_ip": resolved_ip})
         except Exception:

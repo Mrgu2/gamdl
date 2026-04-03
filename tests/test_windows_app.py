@@ -1,10 +1,11 @@
 import sys
 import types
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from gamdl.desktop_runtime import detect_desktop_runtime
-from gamdl.windows_app import WindowsLauncher
+from gamdl.windows_app import WindowsLauncher, main
 
 
 class DesktopRuntimeTests(unittest.TestCase):
@@ -55,6 +56,45 @@ class WindowsLauncherTests(unittest.TestCase):
         open_browser.assert_called_once_with("http://127.0.0.1:8765", new=1)
         fake_root.after.assert_called_once_with(0, fake_root.destroy)
         self.assertEqual(closed, [True])
+
+    @patch("gamdl.windows_app.platform.system", return_value="Windows")
+    def test_main_passes_network_mode_to_wrapper_preheat(self, _mock_system):
+        args = SimpleNamespace(host="127.0.0.1", port=8765)
+        settings = SimpleNamespace(
+            log_level="INFO",
+            use_wrapper=True,
+            song_codec="alac",
+            wrapper_decrypt_ip="127.0.0.1:10022",
+            network_mode="direct",
+            proxy_url="",
+        )
+        fake_server = MagicMock()
+        fake_server.server_address = ("127.0.0.1", 8765)
+
+        with (
+            patch("gamdl.windows_app.argparse.ArgumentParser.parse_args", return_value=args),
+            patch("gamdl.windows_app.AppSettingsStore") as settings_store_cls,
+            patch("gamdl.windows_app.configure_app_logging"),
+            patch("gamdl.windows_app.WrapperManager") as wrapper_manager_cls,
+            patch("gamdl.windows_app._pick_available_port", return_value=8765),
+            patch("gamdl.windows_app.create_server", return_value=fake_server),
+            patch("gamdl.windows_app.threading.Thread") as thread_cls,
+            patch("gamdl.windows_app.WindowsLauncher") as launcher_cls,
+        ):
+            settings_store = settings_store_cls.return_value
+            settings_store.load.return_value = settings
+            wrapper_manager = wrapper_manager_cls.return_value
+            wrapper_manager.ensure_running.return_value = "127.0.0.1:10022"
+
+            launcher = launcher_cls.return_value
+            launcher.run.return_value = None
+            thread_cls.return_value = MagicMock()
+
+            main()
+
+        wrapper_manager.ensure_running.assert_called_once()
+        self.assertEqual(wrapper_manager.ensure_running.call_args.args[0], "127.0.0.1:10022")
+        self.assertEqual(wrapper_manager.ensure_running.call_args.args[1].mode, "direct")
 
 
 if __name__ == "__main__":

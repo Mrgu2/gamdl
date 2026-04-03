@@ -58,6 +58,241 @@ class AppleMusicSongDownloaderTests(unittest.TestCase):
             ):
                 asyncio.run(downloader.get_download_item(song_metadata))
 
+    def test_get_final_path_uses_top_songs_directory_for_artist_top_songs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+
+            final_path = base_downloader.get_final_path(
+                MediaTags(
+                    album="Album",
+                    artist="Artist",
+                    title="Track Title",
+                    title_id=12345,
+                    track=1,
+                ),
+                ".m4a",
+                None,
+                "artist-top-songs",
+            )
+
+            self.assertEqual(
+                Path(final_path),
+                Path(tempdir) / "downloads" / "Artist" / "Top Songs" / "Track Title [12345].m4a",
+            )
+
+    def test_get_final_path_uses_selected_artist_folder_for_artist_top_songs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+
+            final_path = base_downloader.get_final_path(
+                MediaTags(
+                    album="Album",
+                    artist="Artist A & Artist B",
+                    title="Duet",
+                    title_id=42,
+                    track=1,
+                ),
+                ".m4a",
+                None,
+                "artist-top-songs",
+                "Artist A",
+            )
+
+            self.assertEqual(
+                Path(final_path),
+                Path(tempdir) / "downloads" / "Artist A" / "Top Songs" / "Duet [42].m4a",
+            )
+
+    def test_get_final_path_preserves_title_id_suffix_when_truncate_is_enabled(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            with patch.object(AppleMusicBaseDownloader, "initialize", return_value=None):
+                base_downloader = AppleMusicBaseDownloader(
+                    output_path=str(Path(tempdir) / "downloads"),
+                    temp_path=str(Path(tempdir) / "tmp"),
+                    truncate=20,
+                )
+            base_downloader.cdm = object()
+
+            final_path = base_downloader.get_final_path(
+                MediaTags(
+                    artist="Artist",
+                    title="Very Long Track Title",
+                    title_id=12345,
+                ),
+                ".m4a",
+                None,
+                "artist-top-songs",
+            )
+
+            self.assertTrue(Path(final_path).name.endswith(" [12345].m4a"))
+            self.assertLessEqual(len(Path(final_path).name), 20)
+
+    def test_get_final_path_keeps_full_title_id_suffix_when_truncate_is_tiny(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            with patch.object(AppleMusicBaseDownloader, "initialize", return_value=None):
+                base_downloader = AppleMusicBaseDownloader(
+                    output_path=str(Path(tempdir) / "downloads"),
+                    temp_path=str(Path(tempdir) / "tmp"),
+                    truncate=10,
+                )
+            base_downloader.cdm = object()
+
+            final_path = base_downloader.get_final_path(
+                MediaTags(
+                    artist="Artist",
+                    title="Very Long Track Title",
+                    title_id=12345,
+                ),
+                ".m4a",
+                None,
+                "artist-top-songs",
+            )
+
+            self.assertTrue(Path(final_path).name.endswith(" [12345].m4a"))
+
+    def test_get_final_path_keeps_full_title_id_suffix_when_truncate_is_too_small(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            with patch.object(AppleMusicBaseDownloader, "initialize", return_value=None):
+                base_downloader = AppleMusicBaseDownloader(
+                    output_path=str(Path(tempdir) / "downloads"),
+                    temp_path=str(Path(tempdir) / "tmp"),
+                    truncate=10,
+                )
+            base_downloader.cdm = object()
+
+            final_path = base_downloader.get_final_path(
+                MediaTags(
+                    artist="Artist",
+                    title="Very Long Track Title",
+                    title_id=123456789,
+                ),
+                ".m4a",
+                None,
+                "artist-top-songs",
+            )
+
+            self.assertEqual(
+                Path(final_path).name,
+                "V [123456789].m4a",
+            )
+
+    def test_get_download_item_applies_top_songs_paths_during_item_construction(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            interface = SimpleNamespace(
+                get_media_id_of_library_media=MagicMock(return_value="song-123"),
+                get_lyrics=AsyncMock(return_value=Lyrics(synced="[00:00.00]test", unsynced="test")),
+                apple_music_api=SimpleNamespace(
+                    get_webplayback=AsyncMock(return_value={"songList": [{"songId": "song-123"}]})
+                ),
+                get_tags=AsyncMock(
+                    return_value=MediaTags(
+                        album="Album",
+                        artist="Artist A & Artist B",
+                        title="Track Title",
+                        title_id=12345,
+                        track=1,
+                    )
+                ),
+                get_stream_info=AsyncMock(
+                    return_value=SimpleNamespace(
+                        audio_track=SimpleNamespace(legacy=True, stream_url="https://example.com/stream", fairplay_key="fp", widevine_pssh=None),
+                        file_format=SimpleNamespace(value="m4a"),
+                    )
+                ),
+                get_decryption_key_legacy=AsyncMock(return_value=SimpleNamespace(audio_track=SimpleNamespace(key="abc"))),
+                get_cover_url_template=MagicMock(return_value="https://example.com/{w}x{h}.jpg"),
+                get_cover_url=MagicMock(return_value="https://example.com/cover.jpg"),
+                get_cover_file_extension=AsyncMock(return_value=".jpg"),
+            )
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=interface,
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+            song_metadata = {
+                "id": "song-123",
+                "type": "songs",
+                "attributes": {"name": "Track Title", "playParams": {"id": "song-123"}},
+            }
+
+            download_item = asyncio.run(
+                downloader.get_download_item(
+                    song_metadata,
+                    source_context="artist-top-songs",
+                    artist_folder_name="Artist A",
+                )
+            )
+
+            self.assertEqual(
+                Path(download_item.final_path),
+                Path(tempdir) / "downloads" / "Artist A" / "Top Songs" / "Track Title [12345].m4a",
+            )
+            self.assertEqual(
+                Path(download_item.cover_path),
+                Path(tempdir) / "downloads" / "Artist A" / "Top Songs" / "Track Title [12345].jpg",
+            )
+
+    def test_get_final_path_keeps_existing_album_structure_outside_top_songs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+
+            final_path = base_downloader.get_final_path(
+                MediaTags(
+                    album="Album",
+                    album_artist="Artist",
+                    artist="Artist",
+                    title="Track Title",
+                    track=1,
+                ),
+                ".m4a",
+                None,
+            )
+
+            self.assertEqual(
+                Path(final_path),
+                Path(tempdir) / "downloads" / "Artist" / "Album" / "01 Track Title.m4a",
+            )
+
+    def test_get_cover_path_uses_per_song_cover_for_artist_top_songs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=SimpleNamespace(),
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+
+            cover_path = downloader.get_cover_path(
+                str(Path(tempdir) / "downloads" / "Artist" / "Top Songs" / "Track Title [12345].m4a"),
+                ".jpg",
+                "artist-top-songs",
+            )
+
+            self.assertEqual(
+                Path(cover_path),
+                Path(tempdir) / "downloads" / "Artist" / "Top Songs" / "Track Title [12345].jpg",
+            )
+
+    def test_get_cover_path_keeps_shared_cover_outside_top_songs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=SimpleNamespace(),
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+
+            cover_path = downloader.get_cover_path(
+                str(Path(tempdir) / "downloads" / "Artist" / "Album" / "01 Track Title.m4a"),
+                ".jpg",
+            )
+
+            self.assertEqual(
+                Path(cover_path),
+                Path(tempdir) / "downloads" / "Artist" / "Album" / "Cover.jpg",
+            )
+
     def test_single_download_item_captures_format_not_available_error(self):
         song_metadata = {
             "id": "song-123",
@@ -83,6 +318,60 @@ class AppleMusicSongDownloaderTests(unittest.TestCase):
             str(result.error),
             "Requested format is not available for media ID: song-123",
         )
+
+    def test_artist_top_songs_items_are_marked_with_source_context(self):
+        downloader = AppleMusicDownloader(
+            interface=MagicMock(),
+            base_downloader=SimpleNamespace(),
+            song_downloader=SimpleNamespace(),
+            music_video_downloader=None,
+            uploaded_video_downloader=None,
+        )
+        download_item = DownloadItem(media_metadata={"id": "song-123", "type": "song"})
+
+        with patch.object(
+            downloader,
+            "get_single_download_item",
+            new=AsyncMock(side_effect=lambda *args, **kwargs: DownloadItem(
+                media_metadata=download_item.media_metadata,
+                source_context=kwargs.get("source_context"),
+                artist_folder_name=kwargs.get("artist_folder_name"),
+            )),
+        ):
+            result = asyncio.run(
+                downloader.get_artist_songs_download_items(
+                    [{"id": "song-123", "type": "songs", "attributes": {"name": "Track Title"}}],
+                    select_all=True,
+                    artist_folder_name="Artist A",
+                )
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].source_context, "artist-top-songs")
+        self.assertEqual(result[0].artist_folder_name, "Artist A")
+
+    def test_get_artist_download_items_returns_empty_when_auto_selected_view_is_missing(self):
+        downloader = AppleMusicDownloader(
+            interface=SimpleNamespace(
+                apple_music_api=SimpleNamespace(
+                    extend_api_data=AsyncMock(),
+                )
+            ),
+            base_downloader=SimpleNamespace(),
+            song_downloader=SimpleNamespace(),
+            music_video_downloader=None,
+            uploaded_video_downloader=None,
+            artist_auto_select=MagicMock(path_key=("views", "top-songs")),
+        )
+        artist_metadata = {
+            "attributes": {"name": "Artist A"},
+            "views": {},
+        }
+
+        result = asyncio.run(downloader.get_artist_download_items(artist_metadata))
+
+        self.assertEqual(result, [])
+        downloader.interface.apple_music_api.extend_api_data.assert_not_called()
 
     def test_download_failure_does_not_write_sidecars_or_playlist_file(self):
         interface = SimpleNamespace(get_cover_bytes=AsyncMock(return_value=b"cover"))

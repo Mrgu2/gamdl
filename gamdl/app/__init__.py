@@ -4,6 +4,7 @@ from .diagnostics import DiagnosticsService
 from .executables import ExecutableResolution, resolve_executable
 from .downloads import DownloadJob, DownloadResult, DownloadService
 from .file_actions import DesktopFileActions
+from ..network import NetworkConfig
 from .logging_utils import AppLogStore, configure_app_logging
 from .paths import AppPaths
 from .settings import AppSettingsStore
@@ -26,6 +27,7 @@ __all__ = [
     "DownloadService",
     "ExecutableResolution",
     "LoginMethod",
+    "NetworkConfig",
     "SessionStatus",
     "WrapperManager",
     "WrapperStatus",

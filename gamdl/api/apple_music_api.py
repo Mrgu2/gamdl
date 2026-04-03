@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from ..network import NetworkConfig, httpx_client_kwargs
 from ..utils import get_response, raise_for_status, safe_json
 from .constants import (
     AMP_API_URL,
@@ -32,11 +33,13 @@ class AppleMusicApi:
         language: str = "en-US",
         media_user_token: str | None = None,
         developer_token: str | None = None,
+        network_config: NetworkConfig | None = None,
     ) -> None:
         self.storefront = storefront
         self.language = language
         self.media_user_token = media_user_token
         self.token = developer_token
+        self.network_config = network_config
 
     @classmethod
     async def create_from_netscape_cookies(
@@ -80,7 +83,10 @@ class AppleMusicApi:
         *args,
         **kwargs,
     ) -> "AppleMusicApi":
-        wrapper_account_response = await get_response(wrapper_account_url)
+        wrapper_account_response = await get_response(
+            wrapper_account_url,
+            network_config=kwargs.get("network_config"),
+        )
         wrapper_account_info = safe_json(wrapper_account_response)
 
         return await cls.create(
@@ -98,12 +104,14 @@ class AppleMusicApi:
         language: str = "en-US",
         media_user_token: str | None = None,
         developer_token: str | None = None,
+        network_config: NetworkConfig | None = None,
     ) -> "AppleMusicApi":
         api = cls(
             storefront=storefront,
             language=language,
             media_user_token=media_user_token,
             developer_token=developer_token,
+            network_config=network_config,
         )
         await api.initialize()
         return api
@@ -134,6 +142,7 @@ class AppleMusicApi:
             },
             follow_redirects=True,
             timeout=60.0,
+            **httpx_client_kwargs(self.network_config),
         )
 
     async def _get_token(self) -> str:
@@ -155,8 +164,6 @@ class AppleMusicApi:
         if not token_match:
             raise Exception("Token not found in index.js page")
         token = token_match.group(1)
-
-        logger.debug(f"Token: {token}")
         return token
 
     async def _initialize_token(self) -> None:

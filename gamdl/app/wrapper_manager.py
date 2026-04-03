@@ -5,10 +5,12 @@ import re
 import socket
 import subprocess
 import time
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from ..network import NetworkConfig, build_subprocess_env
 from .executables import resolve_executable
 
 logger = logging.getLogger("gamdl.app.wrapper")
@@ -124,6 +126,26 @@ class WrapperManager:
         return parse_wrapper_decrypt_ip(wrapper_decrypt_ip)
 
     @staticmethod
+    def _call_with_optional_network_config(callback, network_config: NetworkConfig | None):
+        try:
+            parameters = inspect.signature(callback).parameters.values()
+        except (TypeError, ValueError):
+            return callback(network_config)
+
+        accepts_positional = any(
+            parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.VAR_POSITIONAL,
+            )
+            for parameter in parameters
+        )
+        if accepts_positional:
+            return callback(network_config)
+        return callback()
+
+    @staticmethod
     def _is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         try:
             addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -145,7 +167,11 @@ class WrapperManager:
             decrypt_port + WRAPPER_M3U8_PORT_OFFSET,
         )
 
-    def probe_status(self, wrapper_decrypt_ip: str) -> WrapperStatus:
+    def probe_status(
+        self,
+        wrapper_decrypt_ip: str,
+        network_config: NetworkConfig | None = None,
+    ) -> WrapperStatus:
         host, preferred_port = self._parse_host_port(wrapper_decrypt_ip)
         if self._ports_ready(host, preferred_port):
             return WrapperStatus(
@@ -155,7 +181,10 @@ class WrapperManager:
                 message="已检测到可用的外部 wrapper。",
             )
 
-        if not self._docker_available():
+        if not self._call_with_optional_network_config(
+            self._docker_available,
+            network_config,
+        ):
             return WrapperStatus(
                 available=False,
                 mode="none",
@@ -163,7 +192,10 @@ class WrapperManager:
             )
 
         candidates = prioritize_wrapper_candidates(
-            self._list_wrapper_containers(),
+            self._call_with_optional_network_config(
+                self._list_wrapper_containers,
+                network_config,
+            ),
             preferred_port,
         )
         for candidate in candidates:
@@ -190,7 +222,7 @@ class WrapperManager:
             message="未检测到外部 wrapper；正式分发版默认使用 AAC，ALAC 仅在外部 wrapper 可用时开放。",
         )
 
-    def _docker_available(self) -> bool:
+    def _docker_available(self, network_config: NetworkConfig | None = None) -> bool:
         try:
             result = subprocess.run(
                 [self.docker_bin, "version", "--format", "{{.Server.Version}}"],
@@ -198,12 +230,16 @@ class WrapperManager:
                 capture_output=True,
                 text=True,
                 timeout=self.docker_command_timeout,
+                env=build_subprocess_env(network_config),
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
 
-    def _list_wrapper_containers(self) -> list[str]:
+    def _list_wrapper_containers(
+        self,
+        network_config: NetworkConfig | None = None,
+    ) -> list[str]:
         try:
             result = subprocess.run(
                 [self.docker_bin, "ps", "-a", "--format", "{{.Names}}"],
@@ -211,6 +247,7 @@ class WrapperManager:
                 capture_output=True,
                 text=True,
                 timeout=self.docker_command_timeout,
+                env=build_subprocess_env(network_config),
             )
         except (OSError, subprocess.TimeoutExpired):
             return []
@@ -218,7 +255,11 @@ class WrapperManager:
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
-    def _start_container(self, name: str) -> bool:
+    def _start_container(
+        self,
+        name: str,
+        network_config: NetworkConfig | None = None,
+    ) -> bool:
         logger.info("Trying to start wrapper container %s", name)
         try:
             result = subprocess.run(
@@ -227,23 +268,31 @@ class WrapperManager:
                 capture_output=True,
                 text=True,
                 timeout=self.docker_command_timeout,
+                env=build_subprocess_env(network_config),
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
 
-    def ensure_running(self, wrapper_decrypt_ip: str) -> str:
+    def ensure_running(
+        self,
+        wrapper_decrypt_ip: str,
+        network_config: NetworkConfig | None = None,
+    ) -> str:
         host, preferred_port = self._parse_host_port(wrapper_decrypt_ip)
         if self._ports_ready(host, preferred_port):
             return f"{host}:{preferred_port}"
 
-        if not self._docker_available():
+        if not self._call_with_optional_network_config(
+            self._docker_available,
+            network_config,
+        ):
             raise RuntimeError(
                 "未检测到可用的 Docker，无法自动启动 wrapper。"
             )
 
         candidates = prioritize_wrapper_candidates(
-            self._list_wrapper_containers(),
+            self._list_wrapper_containers(network_config),
             preferred_port,
         )
         if not candidates:
@@ -259,7 +308,7 @@ class WrapperManager:
                 logger.info("Detected running wrapper at %s", resolved_ip)
                 return resolved_ip
 
-            if not self._start_container(candidate.name):
+            if not self._start_container(candidate.name, network_config):
                 last_error = f"docker start {candidate.name} failed"
                 continue
 

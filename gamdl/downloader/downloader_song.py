@@ -36,11 +36,15 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         song_metadata: dict,
         playlist_metadata: dict = None,
         playlist_tags_override: PlaylistTags | None = None,
+        source_context: str | None = None,
+        artist_folder_name: str | None = None,
     ) -> DownloadItem:
         download_item = DownloadItem()
 
         download_item.media_metadata = song_metadata
         download_item.playlist_metadata = playlist_metadata
+        download_item.source_context = source_context
+        download_item.artist_folder_name = artist_folder_name
 
         song_id = self.interface.get_media_id_of_library_media(song_metadata)
 
@@ -78,6 +82,8 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             download_item.media_tags,
             ".m4a",
             download_item.playlist_tags,
+            download_item.source_context,
+            download_item.artist_folder_name,
         )
         download_item.synced_lyrics_path = self.get_lyrics_synced_path(
             download_item.final_path,
@@ -161,6 +167,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             download_item.cover_path = self.get_cover_path(
                 download_item.final_path,
                 cover_file_extension,
+                download_item.source_context,
             )
 
         return download_item
@@ -225,7 +232,10 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         self,
         final_path: str,
         file_extension: str,
+        source_context: str | None = None,
     ) -> str:
+        if source_context == "artist-top-songs":
+            return str(Path(final_path).with_suffix(file_extension))
         return str(Path(final_path).parent / ("Cover" + file_extension))
 
     def write_synced_lyrics(

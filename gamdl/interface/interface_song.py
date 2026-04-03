@@ -261,7 +261,7 @@ class AppleMusicSongInterface(AppleMusicInterface):
         if not m3u8_master_url:
             return None
 
-        m3u8_master_obj = m3u8.loads((await get_response(m3u8_master_url)).text)
+        m3u8_master_obj = m3u8.loads((await self._get_response(m3u8_master_url)).text)
         m3u8_master_data = m3u8_master_obj.data
 
         if codec == SongCodec.ASK:
@@ -305,7 +305,7 @@ class AppleMusicSongInterface(AppleMusicInterface):
                 "com.apple.streamingkeydelivery",
             )
         else:
-            m3u8_obj = m3u8.loads((await get_response(stream_info.stream_url)).text)
+            m3u8_obj = m3u8.loads((await self._get_response(stream_info.stream_url)).text)
 
             stream_info.widevine_pssh = self._get_drm_uri_from_m3u8_keys(
                 m3u8_obj,
@@ -416,7 +416,7 @@ class AppleMusicSongInterface(AppleMusicInterface):
             i for i in webplayback["songList"][0]["assets"] if i["flavor"] == flavor
         )["URL"]
 
-        m3u8_obj = m3u8.loads((await get_response(stream_info.stream_url)).text)
+        m3u8_obj = m3u8.loads((await self._get_response(stream_info.stream_url)).text)
         stream_info.widevine_pssh = m3u8_obj.keys[0].uri
 
         stream_info_av = StreamInfoAv(
@@ -499,7 +499,7 @@ class AppleMusicSongInterface(AppleMusicInterface):
             return {}
 
         preview_url = previews[0]["url"]
-        preview_response = await get_response(preview_url)
+        preview_response = await self._get_response(preview_url)
         preview_bytes = preview_response.content
         preview_tags = dict(MP4(io.BytesIO(preview_bytes)).tags)
 

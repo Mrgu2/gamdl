@@ -14,6 +14,8 @@ from ..interface.types import (
 class DownloadItem:
     media_metadata: dict = None
     playlist_metadata: dict = None
+    source_context: str | None = None
+    artist_folder_name: str | None = None
     random_uuid: str = None
     lyrics: Lyrics = None
     media_tags: MediaTags = None

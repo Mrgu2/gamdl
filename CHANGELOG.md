@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.1 - 2026-04-04
+
+- 修复 Apple Music 登录过期后的误导状态：下载任务如果遇到 Apple 返回 `403 Invalid authentication / 40300`，现在会立即清空本地伪“已连接”会话，并提示用户重新登录，而不是继续显示缓存里的已登录状态
+- 收紧本地 Web UI 的请求源校验：现在只接受 `Host` 为 loopback 的请求，阻断通过 DNS rebinding 读取首页 token 并接管本地 API 的路径
+- 修复 `/api/wrapper/start` 的 loopback 绕过：启动 wrapper 前现在会复用桌面版的本机地址校验，不再接受任意远端主机作为探测目标
+- 修复本地 Web UI 的 HTML 注入风险：下载预览和账号状态列表在写入 `innerHTML` 前现在会统一转义用户可控字段，避免 pasted URL 或账号限制字段触发本地 DOM XSS
+- 修复 token 存储安全回归：keyring / Keychain 写入成功后现在会立即清理陈旧的 `.token` 明文兜底文件，不再在成功路径额外落盘敏感令牌
+- 桌面版设置新增三档 `网络模式`（自动 / 直连 / 高级代理），并把 HTTP 请求、登录校验与 wrapper / 下载相关子进程统一接入同一套代理策略
+- 修复高级代理下的 loopback 回归：`httpx` 显式代理现在会为 `localhost` / `127.0.0.1` / `::1` 单独直连，避免本机 wrapper / account API 被错误送进代理
+- 修复高级代理对子进程的 loopback 回归：自定义代理模式现在会保留 `NO_PROXY=localhost,127.0.0.1,::1`，避免本地 wrapper / m3u8 流量误走代理；同时保留 SOCKS5 缺依赖时的精确报错
+- 网络模式从“高级代理”切回“自动 / 直连”时，现在会清空陈旧的 `proxy_url`，避免旧代理地址在后续请求里被意外复用
+- 设置页“启动 wrapper”按钮现在会带上当前表单里的网络设置，而不是只读取上次保存到磁盘的旧配置
+- 修复 CLI 漏接 `network_mode` / `proxy_url` 的回归，命令行入口现在也会把同一套网络策略传给 API、iTunes 和下载器
+- 诊断包里的 `settings.json` 现已改成白名单导出，仅保留排障必需字段，并继续对代理凭据与常见 token / Bearer 日志做脱敏
+- 依赖安全升级：将 `yt-dlp` 最低版本提升到 `2026.02.21+`，将 `pillow` 提升到 `12.1.1+`，并通过重锁把 `urllib3`、`requests`、`cryptography`、`protobuf` 与 `pywidevine` 提升到已包含公开修复的安全版本区间
+- 调整 `artist / Top Songs` 落盘规则：歌曲改为写入 `歌手名/Top Songs/`，并使用带 `title_id` 的逐曲文件名避免同名歌曲互相覆盖；对应封面 sidecar 也改为逐曲同名文件，避免共享 `Cover.jpg` 被覆盖
+- 修复 `artist / Top Songs` 在合唱曲目下错误按曲目艺术家拆目录的问题，现统一落在用户选择的 artist 目录下
+- 修复 `artist / Top Songs` 在合唱歌曲场景下按曲目艺术家错误分流目录的问题，现统一落在用户选中的 artist 目录下
+- 修复 `artist / Top Songs` 失败重试丢失目录上下文的问题；现在重试单曲会继续落在原来的 `歌手名/Top Songs/` 目录，而不会退回专辑目录结构
+- 修复 `artist / Top Songs` 在极小 `truncate` 配置下把 `[title_id]` 后缀截断的问题；现在即使截断长度很小，也会优先保留完整 ID 后缀，避免重名覆盖保护失效
+- 修复 `artist_auto_select` 预选分组缺失时的崩溃：当某个 artist 没有 `Top Songs` 等对应 view 时，现在会返回空下载列表而不是抛 `KeyError`
+
 ## 1.1.0 - 2026-03-30
 
 - 新增 `docs/backdoor-audit-2026-03-30.md`，记录对仓库与 `wrapper-main.zip` 的后门审计结论：未发现明确隐藏后门，但确认 wrapper 账户接口存在未鉴权令牌暴露风险

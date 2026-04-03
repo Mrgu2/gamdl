@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.1.0
+# Gamdl Desktop Fork 1.1.1
 
-[![Release](https://img.shields.io/badge/release-1.1.0-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.1.1-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.1.0` 的目标很明确：
+`Gamdl Desktop Fork 1.1.1` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单、艺术家下载
@@ -26,9 +26,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.1.0 发布内容
+## 1.1.1 发布内容
 
-正式版 `1.1.0` 这次继续发布 macOS 桌面包：
+正式版 `1.1.1` 这次继续发布 macOS 桌面包：
 
 - `Apple Music Downloader-arm64.dmg`
   - 面向 Apple Silicon Mac
@@ -39,14 +39,16 @@
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖一轮 artist 下载、失败重试、wrapper 安全面收紧和桌面 Web UI 收口，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖一轮登录失效纠正、本地 Web UI 安全面继续收紧、统一网络模式与 artist Top Songs 落盘修正，并继续沿用之前 release 的分发方式：
 
-- 桌面版正式开放 artist 链接下载，并提供 `Top Songs / Main Albums / Singles & EPs / All Albums` 选择
-- 下载任务会记录可重试的失败歌曲，任务页新增“重试失败歌曲”，补漏时不再误重跑整个 artist / playlist 集合
-- playlist 失败补漏会保留歌单上下文并继续写回 `.m3u8`，整专里个别单曲失败时也会回退到父链接补齐
-- 下载后处理改为“媒体文件成功落盘后再写封面、歌词、歌单文件”，sidecar 失败会记 warning 而不是把已下载成功的媒体误报成失败
-- 本地 Web API 现在要求本地随机令牌和 `application/json`，wrapper 设置也只接受回环地址，进一步收紧 localhost CSRF 与令牌暴露面
-- token 存储改为优先 keyring，成功读回 keyring 后自动清理 `.token` 明文兜底文件
+- 下载任务如果遇到 Apple 返回 `403 Invalid authentication / 40300`，现在会立即清空本地伪“已连接”会话并提示重新登录
+- 本地 Web UI 继续收紧：现在只接受 loopback `Host`，并在写入 `innerHTML` 前统一转义下载预览和账号状态里的用户可控字段
+- `/api/wrapper/start` 启动前会复用本机地址校验，不再接受任意远端主机作为探测目标
+- 设置页新增三档 `网络模式`（自动 / 直连 / 高级代理），API、登录校验、wrapper 与下载子进程统一接入同一套代理策略
+- 自定义代理模式下会为 `localhost / 127.0.0.1 / ::1` 显式直连，避免本机 wrapper / m3u8 / account API 被误送进代理
+- `artist / Top Songs` 改为稳定写入 `歌手名/Top Songs/`，文件名会保留 `[title_id]` 后缀，失败重试也会继承原目录上下文，避免同名覆盖或回退到专辑目录
+- 诊断包里的 `settings.json` 改成白名单导出，并继续对代理凭据与常见 token / Bearer 日志做脱敏
+- 依赖安全升级：`yt-dlp`、`pillow` 以及相关锁文件依赖提升到包含公开修复的版本区间
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -108,7 +110,7 @@ macOS 包说明：
 
 ### Windows
 
-当前 `1.1.0` release 不附带 Windows 安装包。
+当前 `1.1.1` release 不附带 Windows 安装包。
 
 Windows 包说明：
 
