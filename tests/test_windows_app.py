@@ -49,13 +49,19 @@ class WindowsLauncherTests(unittest.TestCase):
             patch.dict(sys.modules, {"tkinter": tk_module, "tkinter.ttk": ttk_module}),
             patch("gamdl.windows_app.webbrowser.open") as open_browser,
         ):
-            launcher = WindowsLauncher("http://127.0.0.1:8765", lambda: closed.append(True))
+            launcher = WindowsLauncher(
+                "http://127.0.0.1:8765/session/",
+                lambda: closed.append(True),
+                public_origin="http://127.0.0.1:8765",
+            )
             launcher.open_browser()
             launcher.close()
 
-        open_browser.assert_called_once_with("http://127.0.0.1:8765", new=1)
+        open_browser.assert_called_once_with("http://127.0.0.1:8765/session/", new=1)
         fake_root.after.assert_called_once_with(0, fake_root.destroy)
         self.assertEqual(closed, [True])
+        label_texts = [call.kwargs.get("text") for call in ttk_module.Label.call_args_list]
+        self.assertIn("会话地址: http://127.0.0.1:8765/session/", label_texts)
 
     @patch("gamdl.windows_app.platform.system", return_value="Windows")
     def test_main_passes_network_mode_to_wrapper_preheat(self, _mock_system):
@@ -70,6 +76,8 @@ class WindowsLauncherTests(unittest.TestCase):
         )
         fake_server = MagicMock()
         fake_server.server_address = ("127.0.0.1", 8765)
+        fake_server.local_url.return_value = "http://127.0.0.1:8765/secure-session/"
+        fake_server.public_origin.return_value = "http://127.0.0.1:8765"
 
         with (
             patch("gamdl.windows_app.argparse.ArgumentParser.parse_args", return_value=args),
@@ -95,6 +103,11 @@ class WindowsLauncherTests(unittest.TestCase):
         wrapper_manager.ensure_running.assert_called_once()
         self.assertEqual(wrapper_manager.ensure_running.call_args.args[0], "127.0.0.1:10022")
         self.assertEqual(wrapper_manager.ensure_running.call_args.args[1].mode, "direct")
+        launcher_cls.assert_called_once_with(
+            "http://127.0.0.1:8765/secure-session/",
+            unittest.mock.ANY,
+            public_origin="http://127.0.0.1:8765",
+        )
 
 
 if __name__ == "__main__":

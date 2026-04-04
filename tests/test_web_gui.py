@@ -1,12 +1,14 @@
 import json
 import asyncio
+import http.client
+import os
 import platform
 import re
+import socket
 import tempfile
 import threading
 import time
 import unittest
-import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -16,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 from gamdl.api.exceptions import ApiError
 from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus, resolve_executable
+from gamdl.app.auth import TokenDeletionError
 from gamdl.downloader import GamdlError
 from gamdl.interface.types import PlaylistTags
 from gamdl.web_gui import (
@@ -25,9 +28,12 @@ from gamdl.web_gui import (
     Job,
     WebGuiHandler,
     WebGuiServer,
+    WebGuiServerIPv6,
+    _format_host_for_url,
     build_download_command,
     classify_url,
     create_server,
+    main as web_gui_main,
     parse_url_input,
     validate_bind_host,
 )
@@ -79,6 +85,13 @@ class WebGuiSecurityTests(unittest.TestCase):
         self.assertEqual(validate_bind_host("127.0.0.1"), "127.0.0.1")
         self.assertEqual(validate_bind_host("::1"), "::1")
         self.assertEqual(validate_bind_host("localhost"), "localhost")
+
+    def test_format_host_for_url_wraps_ipv6_loopback(self):
+        self.assertEqual(_format_host_for_url("::1"), "[::1]")
+        self.assertEqual(_format_host_for_url("127.0.0.1"), "127.0.0.1")
+
+    def test_ipv6_server_uses_ipv6_address_family(self):
+        self.assertEqual(WebGuiServerIPv6.address_family, socket.AF_INET6)
 
     def test_validate_bind_host_rejects_non_loopback_addresses(self):
         with self.assertRaisesRegex(ValueError, "仅允许绑定到本机回环地址"):
@@ -453,6 +466,16 @@ class WebGuiHelpersTests(unittest.TestCase):
 class WebGuiApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
+        self._proxy_env_backup = {
+            name: os.environ.get(name)
+            for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+        }
+        self._getproxies_backup = urllib.request.getproxies
+        self._getproxies_env_backup = urllib.request.getproxies_environment
+        for name in self._proxy_env_backup:
+            os.environ.pop(name, None)
+        urllib.request.getproxies = lambda: {}
+        urllib.request.getproxies_environment = lambda: {}
         self.paths = AppPaths(base_dir=Path(self.tempdir.name), app_name="GamdlTest")
         self.server = WebGuiServer(
             ("127.0.0.1", 0),
@@ -463,6 +486,7 @@ class WebGuiApiTests(unittest.TestCase):
             file_picker=lambda: str(self.paths.default_output_path / "picked" / "input.m4a"),
             input_folder_picker=lambda: str(self.paths.default_output_path / "picked-input"),
         )
+        self.server.job_manager.shutdown()
         self.server.auth_manager = FakeAuthManager()
         self.server.file_actions = FakeFileActions()
         self.server.job_manager = JobManager(
@@ -473,104 +497,163 @@ class WebGuiApiTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.server.server_address
+        self.host = host
+        self.port = port
         self.base_url = f"http://{host}:{port}"
-        # Security tests must hit the loopback server directly instead of inheriting
-        # any system proxy that could turn a local request into an upstream 502.
-        self.url_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.app_base_url = f"{self.base_url}{self.server.session_base_path}"
 
     def tearDown(self) -> None:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=1)
+        for name, value in self._proxy_env_backup.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        urllib.request.getproxies = self._getproxies_backup
+        urllib.request.getproxies_environment = self._getproxies_env_backup
         self.tempdir.cleanup()
 
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict | None = None,
+        headers: dict[str, str] | None = None,
+        include_token: bool = True,
+        use_session_path: bool = True,
+    ) -> tuple[int, bytes, dict[str, str]]:
+        body = b""
+        request_headers = {"Connection": "close"}
+        if include_token:
+            request_headers["X-Gamdl-Request-Token"] = self.server.api_request_token
+        if headers:
+            request_headers.update(headers)
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            request_headers.setdefault("Content-Type", "application/json")
+        target = f"{self.server.session_base_path}{path}" if use_session_path else path
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        try:
+            connection.request(method, target, body=body, headers=request_headers)
+            response = connection.getresponse()
+            try:
+                payload_bytes = response.read()
+                response_headers = {key: value for key, value in response.getheaders()}
+                return response.status, payload_bytes, response_headers
+            finally:
+                response.close()
+        finally:
+            connection.close()
+
     def _get_json(self, path: str) -> dict:
-        with self.url_opener.open(f"{self.base_url}{path}") as response:
-            return json.load(response)
+        status, body, _headers = self._request(path)
+        self.assertEqual(status, 200)
+        return json.loads(body.decode("utf-8"))
 
     def _post_json(self, path: str, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Gamdl-Request-Token": self.server.api_request_token,
-            },
-            method="POST",
-        )
-        with self.url_opener.open(request) as response:
-            return json.load(response)
+        status, body, _headers = self._request(path, method="POST", payload=payload)
+        self.assertIn(status, {200, 201})
+        return json.loads(body.decode("utf-8"))
 
     def _post_json_error(self, path: str, payload: dict) -> tuple[int, dict]:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Gamdl-Request-Token": self.server.api_request_token,
-            },
-            method="POST",
+        status, body, _headers = self._request(path, method="POST", payload=payload)
+        return status, json.loads(body.decode("utf-8"))
+
+    def _wait_for_terminal_job(self, job_id: str, timeout: float = 1.5) -> dict:
+        deadline = time.time() + timeout
+        job = self._get_json(f"/api/jobs/{job_id}")
+        while job["status"] not in {"completed", "failed", "cancelled"}:
+            if time.time() >= deadline:
+                self.fail(f"job {job_id} did not reach terminal state within {timeout} seconds")
+            time.sleep(0.05)
+            job = self._get_json(f"/api/jobs/{job_id}")
+        return job
+
+    def test_main_prints_session_url_for_manual_copy(self):
+        fake_server = SimpleNamespace(
+            local_url=lambda host: "http://127.0.0.1:8765/session-token/",
+            public_origin=lambda host: "http://127.0.0.1:8765",
+            serve_forever=lambda: None,
+            server_close=lambda: None,
         )
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            self.url_opener.open(request)
-        return error.exception.code, json.loads(error.exception.read().decode("utf-8"))
+
+        with (
+            patch("gamdl.web_gui.argparse.ArgumentParser.parse_args", return_value=SimpleNamespace(host="127.0.0.1", port=8765, no_open=True)),
+            patch("gamdl.web_gui.AppSettingsStore") as settings_store_cls,
+            patch("gamdl.web_gui.configure_app_logging"),
+            patch("gamdl.web_gui.create_server", return_value=fake_server),
+            patch("builtins.print") as print_mock,
+        ):
+            settings_store_cls.return_value.load.return_value = SimpleNamespace(log_level="INFO")
+            web_gui_main()
+
+        printed_lines = [" ".join(str(part) for part in call.args) for call in print_mock.call_args_list]
+        self.assertTrue(any("http://127.0.0.1:8765/session-token/" in line for line in printed_lines))
 
     def test_post_rejects_missing_local_request_token(self):
-        request = urllib.request.Request(
-            f"{self.base_url}/api/auth/logout",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
+        status, body, _headers = self._request(
+            "/api/auth/logout",
             method="POST",
+            payload={},
+            headers={"Content-Type": "application/json"},
+            include_token=False,
         )
-
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            self.url_opener.open(request)
-
-        self.assertEqual(error.exception.code, 403)
-        self.assertIn("本地会话令牌", error.exception.read().decode("utf-8"))
+        self.assertEqual(status, 403)
+        self.assertIn("本地会话令牌", body.decode("utf-8"))
 
     def test_get_rejects_non_loopback_host_header(self):
-        request = urllib.request.Request(
-            f"{self.base_url}/",
+        status, body, _headers = self._request(
+            "/",
             headers={"Host": "evil.example"},
         )
-
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            self.url_opener.open(request)
-
-        self.assertEqual(error.exception.code, 403)
-        self.assertIn("本机回环地址", error.exception.read().decode("utf-8"))
+        self.assertEqual(status, 403)
+        self.assertIn("本机回环地址", body.decode("utf-8"))
 
     def test_post_rejects_non_json_content_type(self):
-        request = urllib.request.Request(
-            f"{self.base_url}/api/settings",
-            data=b"{}",
+        status, body, _headers = self._request(
+            "/api/settings",
+            method="POST",
+            payload={},
             headers={
                 "Content-Type": "text/plain",
-                "X-Gamdl-Request-Token": self.server.api_request_token,
             },
-            method="POST",
         )
-
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            self.url_opener.open(request)
-
-        self.assertEqual(error.exception.code, 415)
-        self.assertIn("application/json", error.exception.read().decode("utf-8"))
+        self.assertEqual(status, 415)
+        self.assertIn("application/json", body.decode("utf-8"))
 
     def test_get_index_injects_runtime_request_token(self):
-        with self.url_opener.open(f"{self.base_url}/") as response:
-            html = response.read().decode("utf-8")
+        status, body, headers = self._request("/", include_token=False)
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8")
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
 
         self.assertIn(self.server.api_request_token, html)
         self.assertNotIn("__GAMDL_API_REQUEST_TOKEN__", html)
+
+    def test_plain_root_no_longer_serves_session_page(self):
+        status, _body, _headers = self._request("/", include_token=False, use_session_path=False)
+        self.assertEqual(status, 404)
 
     def _store_job(self, job: Job) -> None:
         with self.server.job_manager.jobs_lock:
             self.server.job_manager.jobs[job.id] = job
 
     def test_get_settings_returns_defaults(self):
-        data = self._get_json("/api/settings")
+        status, body, headers = self._request("/api/settings")
+        self.assertEqual(status, 200)
+        data = json.loads(body.decode("utf-8"))
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         output_path = Path(data["settings"]["output_path"])
         self.assertEqual(output_path.name, "Apple Music Downloader")
         self.assertEqual(output_path.parent.name, "Downloads")
@@ -900,6 +983,11 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertIn("channels", data)
         self.assertEqual(data["folder_path"], str(self.paths.logs_dir))
 
+    def test_sensitive_get_rejects_missing_local_request_token(self):
+        status, body, _headers = self._request("/api/settings", include_token=False)
+        self.assertEqual(status, 403)
+        self.assertIn("需要有效本地会话令牌", body.decode("utf-8"))
+
     def test_open_logs_folder_uses_logs_directory(self):
         self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -928,6 +1016,18 @@ class WebGuiApiTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(data["error"], "请先完成 Apple Music 登录。")
+
+    def test_logout_returns_error_when_token_delete_fails(self):
+        with patch.object(
+            self.server.auth_manager,
+            "logout",
+            side_effect=TokenDeletionError("当前系统凭据存储不可用，无法安全清除 Apple Music 登录态。请启用系统钥匙串后重试。"),
+        ):
+            status, data = self._post_json_error("/api/auth/logout", {})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["category"], "login")
+        self.assertIn("无法安全清除 Apple Music 登录态", data["error"])
 
     def test_create_job_rejects_artist_without_selection(self):
         self.server.auth_manager.login_with_webview()
@@ -968,10 +1068,15 @@ class WebGuiApiTests(unittest.TestCase):
                     "artist_auto_select": "top-songs",
                 },
             )
-            job = self._get_json(f"/api/jobs/{data['id']}")
+            for _ in range(30):
+                job = self._get_json(f"/api/jobs/{data['id']}")
+                if job["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
 
         self.assertEqual(job["payload"]["artist_auto_select"], "top-songs")
         self.assertEqual(job["url_preview"][0]["kind"], "artist")
+        self.assertEqual(job["status"], "completed")
 
         settings = self._get_json("/api/settings")
         self.assertEqual(settings["settings"]["artist_auto_select"], "")
@@ -1152,7 +1257,12 @@ class WebGuiApiTests(unittest.TestCase):
         )
         self._store_job(failed_job)
 
-        data = self._post_json("/api/jobs/job-retry-failed/retry-failed", {})
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            return_value=FakeDownloadResult(downloaded_items=0, skipped_items=2),
+        ):
+            data = self._post_json("/api/jobs/job-retry-failed/retry-failed", {})
+            self._wait_for_terminal_job(data["retry_job"]["id"])
         retry_job = self._get_json(f"/api/jobs/{data['retry_job']['id']}")
 
         self.assertTrue(data["ok"])
@@ -1188,20 +1298,25 @@ class WebGuiApiTests(unittest.TestCase):
         self.server.auth_manager.login_with_webview()
         downloads_path = self.paths.app_support_dir / "downloads"
 
-        data = self._post_json(
-            "/api/jobs",
-            {
-                "url_text": "https://music.apple.com/us/playlist/test/pl.u-abcdef123",
-                "output_path": str(downloads_path),
-                "overwrite": False,
-                "save_cover": True,
-                "save_playlist": True,
-                "log_level": "INFO",
-                "song_codec": "aac-legacy",
-                "use_wrapper": False,
-                "wrapper_decrypt_ip": "127.0.0.1:10022",
-            },
-        )
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            return_value=FakeDownloadResult(downloaded_items=0, skipped_items=1),
+        ):
+            data = self._post_json(
+                "/api/jobs",
+                {
+                    "url_text": "https://music.apple.com/us/playlist/test/pl.u-abcdef123",
+                    "output_path": str(downloads_path),
+                    "overwrite": False,
+                    "save_cover": True,
+                    "save_playlist": True,
+                    "log_level": "INFO",
+                    "song_codec": "aac-legacy",
+                    "use_wrapper": False,
+                    "wrapper_decrypt_ip": "127.0.0.1:10022",
+                },
+            )
+            self._wait_for_terminal_job(data["id"])
 
         job = self._get_json(f"/api/jobs/{data['id']}")
         self.assertTrue(job["payload"]["save_playlist"])
@@ -1284,7 +1399,12 @@ class WebGuiApiTests(unittest.TestCase):
         )
         self._store_job(failed_job)
 
-        data = self._post_json("/api/jobs/job-retry-playlist/retry-failed", {})
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            return_value=FakeDownloadResult(downloaded_items=0, skipped_items=1),
+        ):
+            data = self._post_json("/api/jobs/job-retry-playlist/retry-failed", {})
+            self._wait_for_terminal_job(data["retry_job"]["id"])
         retry_job = self._get_json(f"/api/jobs/{data['retry_job']['id']}")
 
         self.assertTrue(data["ok"])
@@ -1361,7 +1481,12 @@ class WebGuiApiTests(unittest.TestCase):
         )
         self._store_job(failed_job)
 
-        data = self._post_json("/api/jobs/job-retry-artist-top-songs/retry-failed", {})
+        with patch(
+            "gamdl.web_gui.DownloadService.run_sync",
+            return_value=FakeDownloadResult(downloaded_items=0, skipped_items=1),
+        ):
+            data = self._post_json("/api/jobs/job-retry-artist-top-songs/retry-failed", {})
+            self._wait_for_terminal_job(data["retry_job"]["id"])
         retry_job = self._get_json(f"/api/jobs/{data['retry_job']['id']}")
 
         self.assertTrue(data["ok"])
@@ -1589,10 +1714,8 @@ class WebGuiApiTests(unittest.TestCase):
         )
         self._store_job(job)
 
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(f"{self.base_url}/api/jobs/job-open-with-missing/open-with-options")
-
-        self.assertEqual(error.exception.code, 400)
+        status, _body, _headers = self._request("/api/jobs/job-open-with-missing/open-with-options")
+        self.assertEqual(status, 400)
 
     def test_reveal_latest_file_action_uses_latest_media_path(self):
         latest_media_path = self.paths.default_output_path / "album" / "Song.m4a"
@@ -1720,6 +1843,37 @@ class DownloadServiceTests(unittest.TestCase):
                 downloader_cls.call_args.kwargs["artist_auto_select"].value,
                 "top-songs",
             )
+        finally:
+            tempdir.cleanup()
+
+    def test_create_downloader_closes_api_when_subscription_check_fails(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_api = type(
+                "FakeApi",
+                (),
+                {
+                    "active_subscription": False,
+                    "storefront": "us",
+                    "language": "zh-CN",
+                    "close": AsyncMock(),
+                },
+            )()
+
+            with patch("gamdl.app.downloads.AppleMusicApi.create", new=AsyncMock(return_value=fake_api)):
+                with self.assertRaisesRegex(RuntimeError, "没有可用的 Apple Music 订阅"):
+                    asyncio.run(
+                        service._create_downloader(
+                            DownloadJob(
+                                urls=["https://music.apple.com/us/album/test/1?i=2"],
+                                output_path="/tmp/downloads",
+                            )
+                        )
+                    )
+
+            fake_api.close.assert_awaited_once()
         finally:
             tempdir.cleanup()
 

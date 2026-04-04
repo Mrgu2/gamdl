@@ -23,6 +23,12 @@ logger = logging.getLogger("gamdl.app.auth")
 KEYRING_SERVICE = "gamdl.desktop"
 KEYRING_USERNAME = "media-user-token"
 APPLE_MUSIC_LOGIN_URL = "https://music.apple.com/login"
+KEYRING_UNAVAILABLE_MESSAGE = (
+    "当前系统凭据存储不可用，无法安全保存 Apple Music 登录态。请启用系统钥匙串后重试。"
+)
+KEYRING_DELETE_UNAVAILABLE_MESSAGE = (
+    "当前系统凭据存储不可用，无法安全清除 Apple Music 登录态。请启用系统钥匙串后重试。"
+)
 
 
 class StringEnum(str, Enum):
@@ -62,6 +68,14 @@ class SessionStatus:
     last_error: str | None = None
 
 
+class TokenPersistenceError(RuntimeError):
+    pass
+
+
+class TokenDeletionError(RuntimeError):
+    pass
+
+
 class TokenStore:
     def __init__(self, paths: AppPaths) -> None:
         self.paths = paths
@@ -75,58 +89,92 @@ class TokenStore:
         return keyring
 
     def _log_keyring_error(self, action: str, exc: Exception) -> None:
-        logger.warning("Keyring %s failed, falling back to token file: %s", action, exc)
+        logger.warning("Keyring %s failed; refusing insecure token persistence: %s", action, exc)
 
-    def _write_fallback_token(self, token: str) -> None:
-        self.paths.ensure()
-        self.paths.token_fallback_path.write_text(token, encoding="utf-8")
+    def _is_missing_keyring_entry_error(self, exc: Exception) -> bool:
+        if exc.__class__.__name__ == "PasswordDeleteError":
+            return True
+
+        keyring = self._keyring()
+        if not keyring:
+            return False
+
+        errors = getattr(keyring, "errors", None)
+        password_delete_error = getattr(errors, "PasswordDeleteError", None)
+        return bool(password_delete_error and isinstance(exc, password_delete_error))
+
+    def _token_absent_in_keyring(self, keyring) -> bool:
         try:
-            self.paths.token_fallback_path.chmod(0o600)
+            return not keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        except Exception as exc:
+            logger.warning("Keyring delete verification failed: %s", exc)
+            return False
+
+    def _cleanup_legacy_fallback_token(self) -> None:
+        if not self.paths.token_fallback_path.exists():
+            return
+        try:
+            self.paths.token_fallback_path.unlink()
         except OSError:
-            logger.debug("Unable to tighten fallback token permissions", exc_info=True)
+            logger.warning("Failed to remove legacy plaintext token file", exc_info=True)
+            return
+        logger.warning("Removed legacy plaintext token fallback file at startup.")
+
+    def keyring_available(self) -> bool:
+        keyring = self._keyring()
+        if not keyring:
+            return False
+        try:
+            keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        except Exception as exc:
+            logger.warning("Keyring availability check failed: %s", exc)
+            return False
+        return True
 
     def get(self) -> str | None:
         keyring = self._keyring()
-        if keyring:
-            try:
-                token = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
-            except Exception as exc:
-                logger.warning("Keyring read failed, falling back to cached token or token file: %s", exc)
-                if self._cached_token:
-                    return self._cached_token
-            else:
-                if token:
-                    self._cached_token = token
-                    self.paths.token_fallback_path.unlink(missing_ok=True)
-                    return token
-        if self.paths.token_fallback_path.exists():
-            token = self.paths.token_fallback_path.read_text(encoding="utf-8").strip()
+        if not keyring:
+            return self._cached_token
+        try:
+            token = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        except Exception as exc:
+            logger.warning("Keyring read failed; token unavailable until keyring recovers: %s", exc)
+            return self._cached_token
+        self._cleanup_legacy_fallback_token()
+        if token:
             self._cached_token = token
+            self.paths.token_fallback_path.unlink(missing_ok=True)
             return token
         return self._cached_token
 
     def set(self, token: str) -> None:
-        self._cached_token = token
         keyring = self._keyring()
-        if keyring:
-            try:
-                keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
-            except Exception as exc:
-                self._log_keyring_error("write", exc)
-            else:
-                self.paths.token_fallback_path.unlink(missing_ok=True)
-                return
-        self._write_fallback_token(token)
+        if not keyring:
+            raise TokenPersistenceError(KEYRING_UNAVAILABLE_MESSAGE)
+        try:
+            keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
+        except Exception as exc:
+            self._log_keyring_error("write", exc)
+            raise TokenPersistenceError(KEYRING_UNAVAILABLE_MESSAGE) from exc
+        self._cached_token = token
+        self.paths.token_fallback_path.unlink(missing_ok=True)
 
     def delete(self) -> None:
-        self._cached_token = None
         keyring = self._keyring()
-        if keyring:
-            try:
-                keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-            except Exception as exc:
+        self._cached_token = None
+        try:
+            if not keyring:
+                raise TokenDeletionError(KEYRING_DELETE_UNAVAILABLE_MESSAGE)
+            keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        except Exception as exc:
+            if self._is_missing_keyring_entry_error(exc) or self._token_absent_in_keyring(keyring):
+                return
+            if not isinstance(exc, TokenDeletionError):
                 self._log_keyring_error("delete", exc)
-        self.paths.token_fallback_path.unlink(missing_ok=True)
+                raise TokenDeletionError(KEYRING_DELETE_UNAVAILABLE_MESSAGE) from exc
+            raise
+        finally:
+            self.paths.token_fallback_path.unlink(missing_ok=True)
 
 
 class AuthManager:
@@ -168,13 +216,16 @@ class AuthManager:
             media_user_token=token,
             network_config=self._network_config(),
         )
-        return SessionStatus(
-            connected=True,
-            storefront=api.storefront,
-            language=api.language,
-            active_subscription=api.active_subscription,
-            account_restrictions=api.account_restrictions,
-        )
+        try:
+            return SessionStatus(
+                connected=True,
+                storefront=api.storefront,
+                language=api.language,
+                active_subscription=api.active_subscription,
+                account_restrictions=api.account_restrictions,
+            )
+        finally:
+            await api.close()
 
     def _store_verified_session(
         self,
@@ -193,6 +244,9 @@ class AuthManager:
         self.token_store.set(token)
         self._save_session(payload)
         return SessionStatus(**payload)
+
+    def keyring_available(self) -> bool:
+        return self.token_store.keyring_available()
 
     @staticmethod
     def _coerce_browser(value: object) -> BrowserType | None:
@@ -342,6 +396,8 @@ class AuthManager:
         saved = self._load_session()
         token = self.token_store.get()
         if not token:
+            if not self.keyring_available():
+                return SessionStatus(connected=False, last_error=KEYRING_UNAVAILABLE_MESSAGE)
             return SessionStatus(connected=False, last_error="尚未登录")
 
         if not verify:
@@ -395,7 +451,11 @@ class AuthManager:
     ) -> SessionStatus:
         saved = self._load_session()
         logger.info("Invalidating saved Apple Music session: %s", reason)
-        self.token_store.delete()
+        deletion_error: TokenDeletionError | None = None
+        try:
+            self.token_store.delete()
+        except TokenDeletionError as exc:
+            deletion_error = exc
         payload = {
             "connected": False,
             "login_method": saved.get("login_method"),
@@ -408,10 +468,18 @@ class AuthManager:
             "last_error": reason,
         }
         self._save_session(payload)
+        if deletion_error is not None:
+            raise deletion_error
         return SessionStatus(**payload)
 
     def logout(self) -> SessionStatus:
         logger.info("Clearing saved Apple Music session")
-        self.token_store.delete()
+        deletion_error: TokenDeletionError | None = None
+        try:
+            self.token_store.delete()
+        except TokenDeletionError as exc:
+            deletion_error = exc
         self._clear_session()
+        if deletion_error is not None:
+            raise deletion_error
         return SessionStatus(connected=False, last_error="已退出登录")

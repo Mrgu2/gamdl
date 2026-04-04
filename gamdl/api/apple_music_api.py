@@ -2,6 +2,7 @@ import logging
 import re
 import typing
 from http.cookiejar import MozillaCookieJar
+from ipaddress import ip_address
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -18,12 +19,45 @@ from .constants import (
 from .exceptions import ApiError
 
 logger = logging.getLogger(__name__)
+WRAPPER_ACCOUNT_URL_ERROR = (
+    "Wrapper account API 地址必须是本机回环地址，例如 http://127.0.0.1:30020/。"
+)
 
 
 def _matches_apple_music_cookie_domain(domain: str) -> bool:
     normalized_domain = domain.lstrip(".").lower()
     primary_domain = APPLE_MUSIC_COOKIE_DOMAIN.lstrip(".").lower()
     return normalized_domain == primary_domain or normalized_domain == "apple.com"
+
+
+def normalize_wrapper_account_url(wrapper_account_url: str) -> str:
+    candidate = str(wrapper_account_url or "").strip()
+    if not candidate:
+        raise ValueError(WRAPPER_ACCOUNT_URL_ERROR)
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(WRAPPER_ACCOUNT_URL_ERROR)
+    hostname = parsed.hostname
+    if hostname.lower() != "localhost":
+        try:
+            if not ip_address(hostname).is_loopback:
+                raise ValueError(WRAPPER_ACCOUNT_URL_ERROR)
+        except ValueError as exc:
+            if str(exc) == WRAPPER_ACCOUNT_URL_ERROR:
+                raise
+            raise ValueError(WRAPPER_ACCOUNT_URL_ERROR) from exc
+    path = parsed.path or "/"
+    if not path.endswith("/"):
+        path = f"{path}/"
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(WRAPPER_ACCOUNT_URL_ERROR) from exc
+    netloc_host = hostname
+    if ":" in netloc_host and not netloc_host.startswith("["):
+        netloc_host = f"[{netloc_host}]"
+    netloc = f"{netloc_host}:{port}" if port is not None else netloc_host
+    return parsed._replace(netloc=netloc, path=path, params="", query="", fragment="").geturl()
 
 
 class AppleMusicApi:
@@ -83,8 +117,9 @@ class AppleMusicApi:
         *args,
         **kwargs,
     ) -> "AppleMusicApi":
+        normalized_wrapper_account_url = normalize_wrapper_account_url(wrapper_account_url)
         wrapper_account_response = await get_response(
-            wrapper_account_url,
+            normalized_wrapper_account_url,
             network_config=kwargs.get("network_config"),
         )
         wrapper_account_info = safe_json(wrapper_account_response)
@@ -120,6 +155,11 @@ class AppleMusicApi:
         await self._initialize_client()
         await self._initialize_token()
         await self._initialize_account_info()
+
+    async def close(self) -> None:
+        client = getattr(self, "client", None)
+        if client is not None:
+            await client.aclose()
 
     async def _initialize_client(self) -> None:
         self.client = httpx.AsyncClient(

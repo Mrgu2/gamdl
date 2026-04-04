@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 from functools import wraps
 from pathlib import Path
@@ -37,6 +38,39 @@ from .utils import CustomLoggerFormatter, prompt_path
 logger = logging.getLogger(__name__)
 
 
+class SafeStreamHandler(logging.StreamHandler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except ValueError:
+            return
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        return
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _close_if_supported(resource) -> None:
+    close = getattr(resource, "close", None)
+    if close is None:
+        return
+    await _maybe_await(close())
+
+
+def _detach_handlers(logger_obj: logging.Logger, handlers: list[logging.Handler]) -> None:
+    for handler in handlers:
+        logger_obj.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            logger.debug("Failed to close log handler", exc_info=True)
+
+
 def make_sync(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -64,15 +98,19 @@ async def main(config: CliConfig):
     root_logger = logging.getLogger(__name__.split(".")[0])
     root_logger.setLevel(config.log_level)
     root_logger.propagate = False
+    _detach_handlers(root_logger, list(root_logger.handlers))
 
-    stream_handler = logging.StreamHandler()
+    added_handlers: list[logging.Handler] = []
+    stream_handler = SafeStreamHandler()
     stream_handler.setFormatter(CustomLoggerFormatter())
     root_logger.addHandler(stream_handler)
+    added_handlers.append(stream_handler)
 
     if config.log_file:
         file_handler = logging.FileHandler(config.log_file, encoding="utf-8")
         file_handler.setFormatter(CustomLoggerFormatter(use_colors=False))
         root_logger.addHandler(file_handler)
+        added_handlers.append(file_handler)
 
     logger.info(f"Starting Gamdl {__version__}")
 
@@ -83,6 +121,8 @@ async def main(config: CliConfig):
                 language=config.language,
                 network_config=network_config,
             )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         except ConnectError:
             logger.critical(
                 "Could not connect to the wrapper account API. "
@@ -97,126 +137,126 @@ async def main(config: CliConfig):
             network_config=network_config,
         )
 
-    itunes_api = ItunesApi(
-        apple_music_api.storefront,
-        apple_music_api.language,
-        network_config=network_config,
-    )
-
-    if not apple_music_api.active_subscription:
-        logger.critical(
-            "No active Apple Music subscription found, you won't be able to download"
-            " anything"
+    itunes_api = None
+    try:
+        itunes_api = ItunesApi(
+            apple_music_api.storefront,
+            apple_music_api.language,
+            network_config=network_config,
         )
-        return
-    if apple_music_api.account_restrictions:
-        logger.warning(
-            "Your account has content restrictions enabled, some content may not be"
-            " downloadable"
-        )
-
-    interface = AppleMusicInterface(
-        apple_music_api,
-        itunes_api,
-    )
-    song_interface = AppleMusicSongInterface(interface)
-    music_video_interface = AppleMusicMusicVideoInterface(interface)
-    uploaded_video_interface = AppleMusicUploadedVideoInterface(interface)
-
-    base_downloader = AppleMusicBaseDownloader(
-        output_path=config.output_path,
-        temp_path=config.temp_path,
-        wvd_path=config.wvd_path,
-        overwrite=config.overwrite,
-        save_cover=config.save_cover,
-        save_playlist=config.save_playlist,
-        nm3u8dlre_path=config.nm3u8dlre_path,
-        mp4decrypt_path=config.mp4decrypt_path,
-        ffmpeg_path=config.ffmpeg_path,
-        mp4box_path=config.mp4box_path,
-        use_wrapper=config.use_wrapper,
-        wrapper_decrypt_ip=config.wrapper_decrypt_ip,
-        network_config=network_config,
-        download_mode=config.download_mode,
-        cover_format=config.cover_format,
-        album_folder_template=config.album_folder_template,
-        compilation_folder_template=config.compilation_folder_template,
-        no_album_folder_template=config.no_album_folder_template,
-        single_disc_file_template=config.single_disc_file_template,
-        multi_disc_file_template=config.multi_disc_file_template,
-        no_album_file_template=config.no_album_file_template,
-        playlist_file_template=config.playlist_file_template,
-        date_tag_template=config.date_tag_template,
-        exclude_tags=config.exclude_tags,
-        cover_size=config.cover_size,
-        truncate=config.truncate,
-    )
-    song_downloader = AppleMusicSongDownloader(
-        base_downloader=base_downloader,
-        interface=song_interface,
-        codec_priority=config.song_codec_piority,
-        synced_lyrics_format=config.synced_lyrics_format,
-        no_synced_lyrics=config.no_synced_lyrics,
-        synced_lyrics_only=config.synced_lyrics_only,
-        use_album_date=config.use_album_date,
-        fetch_extra_tags=config.fetch_extra_tags,
-    )
-    music_video_downloader = AppleMusicMusicVideoDownloader(
-        base_downloader=base_downloader,
-        interface=music_video_interface,
-        codec_priority=config.music_video_codec_priority,
-        remux_mode=config.music_video_remux_mode,
-        remux_format=config.music_video_remux_format,
-        resolution=config.music_video_resolution,
-    )
-    uploaded_video_downloader = AppleMusicUploadedVideoDownloader(
-        base_downloader=base_downloader,
-        interface=uploaded_video_interface,
-        quality=config.uploaded_video_quality,
-    )
-    downloader = AppleMusicDownloader(
-        interface=interface,
-        base_downloader=base_downloader,
-        song_downloader=song_downloader,
-        music_video_downloader=music_video_downloader,
-        uploaded_video_downloader=uploaded_video_downloader,
-        artist_auto_select=config.artist_auto_select,
-    )
-
-    if not config.synced_lyrics_only:
-        if (
-            config.download_mode == DownloadMode.NM3U8DLRE
-            and not base_downloader.full_nm3u8dlre_path
-        ):
-            logger.critical(X_NOT_IN_PATH.format("N_m3u8DL-RE", config.nm3u8dlre_path))
+        if not apple_music_api.active_subscription:
+            logger.critical(
+                "No active Apple Music subscription found, you won't be able to download"
+                " anything"
+            )
             return
+        if apple_music_api.account_restrictions:
+            logger.warning(
+                "Your account has content restrictions enabled, some content may not be"
+                " downloadable"
+            )
+
+        interface = AppleMusicInterface(
+            apple_music_api,
+            itunes_api,
+        )
+        song_interface = AppleMusicSongInterface(interface)
+        music_video_interface = AppleMusicMusicVideoInterface(interface)
+        uploaded_video_interface = AppleMusicUploadedVideoInterface(interface)
+
+        base_downloader = AppleMusicBaseDownloader(
+            output_path=config.output_path,
+            temp_path=config.temp_path,
+            wvd_path=config.wvd_path,
+            overwrite=config.overwrite,
+            save_cover=config.save_cover,
+            save_playlist=config.save_playlist,
+            nm3u8dlre_path=config.nm3u8dlre_path,
+            mp4decrypt_path=config.mp4decrypt_path,
+            ffmpeg_path=config.ffmpeg_path,
+            mp4box_path=config.mp4box_path,
+            use_wrapper=config.use_wrapper,
+            wrapper_decrypt_ip=config.wrapper_decrypt_ip,
+            network_config=network_config,
+            download_mode=config.download_mode,
+            cover_format=config.cover_format,
+            album_folder_template=config.album_folder_template,
+            compilation_folder_template=config.compilation_folder_template,
+            no_album_folder_template=config.no_album_folder_template,
+            single_disc_file_template=config.single_disc_file_template,
+            multi_disc_file_template=config.multi_disc_file_template,
+            no_album_file_template=config.no_album_file_template,
+            playlist_file_template=config.playlist_file_template,
+            date_tag_template=config.date_tag_template,
+            exclude_tags=config.exclude_tags,
+            cover_size=config.cover_size,
+            truncate=config.truncate,
+        )
+        song_downloader = AppleMusicSongDownloader(
+            base_downloader=base_downloader,
+            interface=song_interface,
+            codec_priority=config.song_codec_piority,
+            synced_lyrics_format=config.synced_lyrics_format,
+            no_synced_lyrics=config.no_synced_lyrics,
+            synced_lyrics_only=config.synced_lyrics_only,
+            use_album_date=config.use_album_date,
+            fetch_extra_tags=config.fetch_extra_tags,
+        )
+        music_video_downloader = AppleMusicMusicVideoDownloader(
+            base_downloader=base_downloader,
+            interface=music_video_interface,
+            codec_priority=config.music_video_codec_priority,
+            remux_mode=config.music_video_remux_mode,
+            remux_format=config.music_video_remux_format,
+            resolution=config.music_video_resolution,
+        )
+        uploaded_video_downloader = AppleMusicUploadedVideoDownloader(
+            base_downloader=base_downloader,
+            interface=uploaded_video_interface,
+            quality=config.uploaded_video_quality,
+        )
+        downloader = AppleMusicDownloader(
+            interface=interface,
+            base_downloader=base_downloader,
+            song_downloader=song_downloader,
+            music_video_downloader=music_video_downloader,
+            uploaded_video_downloader=uploaded_video_downloader,
+            artist_auto_select=config.artist_auto_select,
+        )
 
         missing_music_video_paths = []
+        if not config.synced_lyrics_only:
+            if (
+                config.download_mode == DownloadMode.NM3U8DLRE
+                and not base_downloader.full_nm3u8dlre_path
+            ):
+                logger.critical(X_NOT_IN_PATH.format("N_m3u8DL-RE", config.nm3u8dlre_path))
+                return
 
-        if not base_downloader.full_ffmpeg_path and (
-            config.music_video_remux_mode == RemuxMode.FFMPEG
-            or config.download_mode == DownloadMode.NM3U8DLRE
-        ):
-            missing_music_video_paths.append(
-                X_NOT_IN_PATH.format("ffmpeg", config.ffmpeg_path)
-            )
+            if not base_downloader.full_ffmpeg_path and (
+                config.music_video_remux_mode == RemuxMode.FFMPEG
+                or config.download_mode == DownloadMode.NM3U8DLRE
+            ):
+                missing_music_video_paths.append(
+                    X_NOT_IN_PATH.format("ffmpeg", config.ffmpeg_path)
+                )
 
-        if (
-            not base_downloader.full_mp4box_path
-            and config.music_video_remux_mode == RemuxMode.MP4BOX
-        ):
-            missing_music_video_paths.append(
-                X_NOT_IN_PATH.format("MP4Box", config.mp4box_path)
-            )
+            if (
+                not base_downloader.full_mp4box_path
+                and config.music_video_remux_mode == RemuxMode.MP4BOX
+            ):
+                missing_music_video_paths.append(
+                    X_NOT_IN_PATH.format("MP4Box", config.mp4box_path)
+                )
 
-        if not base_downloader.full_mp4decrypt_path and (
-            config.song_codec_piority
-            not in (SongCodec.AAC_LEGACY, SongCodec.AAC_HE_LEGACY)
-            or config.music_video_remux_mode == RemuxMode.MP4BOX
-        ):
-            missing_music_video_paths.append(
-                X_NOT_IN_PATH.format("mp4decrypt", config.mp4decrypt_path)
-            )
+            if not base_downloader.full_mp4decrypt_path and (
+                config.song_codec_piority
+                not in (SongCodec.AAC_LEGACY, SongCodec.AAC_HE_LEGACY)
+                or config.music_video_remux_mode == RemuxMode.MP4BOX
+            ):
+                missing_music_video_paths.append(
+                    X_NOT_IN_PATH.format("mp4decrypt", config.mp4decrypt_path)
+                )
 
         if missing_music_video_paths:
             logger.warning(
@@ -234,85 +274,89 @@ async def main(config: CliConfig):
                 "They're not guaranteed to work due to API limitations."
             )
 
-    if config.read_urls_as_txt:
-        urls_from_file = []
-        for url in config.urls:
-            if Path(url).is_file() and Path(url).exists():
-                urls_from_file.extend(
-                    [
-                        line.strip()
-                        for line in Path(url).read_text(encoding="utf-8").splitlines()
-                        if line.strip()
-                    ]
-                )
-        urls = urls_from_file
-    else:
-        urls = config.urls
+        if config.read_urls_as_txt:
+            urls_from_file = []
+            for url in config.urls:
+                if Path(url).is_file() and Path(url).exists():
+                    urls_from_file.extend(
+                        [
+                            line.strip()
+                            for line in Path(url).read_text(encoding="utf-8").splitlines()
+                            if line.strip()
+                        ]
+                    )
+            urls = urls_from_file
+        else:
+            urls = config.urls
 
-    error_count = 0
-    for url_index, url in enumerate(urls, 1):
-        url_progress = click.style(f"[URL {url_index}/{len(urls)}]", dim=True)
-        logger.info(url_progress + f' Processing "{url}"')
-        download_queue = None
-        try:
-            url_info = downloader.get_url_info(url)
-            if not url_info:
-                logger.warning(
-                    url_progress + f' Could not parse "{url}", skipping.',
-                )
-                continue
-
-            download_queue = await downloader.get_download_queue(url_info)
-            if not download_queue:
-                logger.warning(
-                    url_progress
-                    + f' No downloadable media found for "{url}", skipping.',
-                )
-                continue
-        except KeyboardInterrupt:
-            exit(1)
-        except Exception as e:
-            error_count += 1
-            logger.error(
-                url_progress + f' Error processing "{url}"',
-                exc_info=not config.no_exceptions,
-            )
-
-        if not download_queue:
-            continue
-
-        for download_index, download_item in enumerate(
-            download_queue,
-            1,
-        ):
-            download_queue_progress = click.style(
-                f"[Track {download_index}/{len(download_queue)}]",
-                dim=True,
-            )
-            media_title = (
-                download_item.media_metadata["attributes"]["name"]
-                if isinstance(
-                    download_item,
-                    DownloadItem,
-                )
-                else "Unknown Title"
-            )
-            logger.info(download_queue_progress + f' Downloading "{media_title}"')
-
+        error_count = 0
+        for url_index, url in enumerate(urls, 1):
+            url_progress = click.style(f"[URL {url_index}/{len(urls)}]", dim=True)
+            logger.info(url_progress + f' Processing "{url}"')
+            download_queue = None
             try:
-                await downloader.download(download_item)
-            except GamdlError as e:
-                logger.warning(
-                    download_queue_progress + f' Skipping "{media_title}": {e}'
-                )
-                continue
+                url_info = downloader.get_url_info(url)
+                if not url_info:
+                    logger.warning(
+                        url_progress + f' Could not parse "{url}", skipping.',
+                    )
+                    continue
+
+                download_queue = await downloader.get_download_queue(url_info)
+                if not download_queue:
+                    logger.warning(
+                        url_progress
+                        + f' No downloadable media found for "{url}", skipping.',
+                    )
+                    continue
             except KeyboardInterrupt:
                 exit(1)
             except Exception as e:
                 error_count += 1
                 logger.error(
-                    download_queue_progress + f' Error downloading "{media_title}"',
+                    url_progress + f' Error processing "{url}"',
                     exc_info=not config.no_exceptions,
                 )
 
-    logger.info(f"Finished with {error_count} error(s)")
+            if not download_queue:
+                continue
+
+            for download_index, download_item in enumerate(
+                download_queue,
+                1,
+            ):
+                download_queue_progress = click.style(
+                    f"[Track {download_index}/{len(download_queue)}]",
+                    dim=True,
+                )
+                media_title = (
+                    download_item.media_metadata["attributes"]["name"]
+                    if isinstance(
+                        download_item,
+                        DownloadItem,
+                    )
+                    else "Unknown Title"
+                )
+                logger.info(download_queue_progress + f' Downloading "{media_title}"')
+
+                try:
+                    await downloader.download(download_item)
+                except GamdlError as e:
+                    logger.warning(
+                        download_queue_progress + f' Skipping "{media_title}": {e}'
+                    )
+                    continue
+                except KeyboardInterrupt:
+                    exit(1)
+                except Exception as e:
+                    error_count += 1
+                    logger.error(
+                        download_queue_progress + f' Error downloading "{media_title}"',
+                        exc_info=not config.no_exceptions,
+                    )
+
+        logger.info(f"Finished with {error_count} error(s)")
+    finally:
+        await _close_if_supported(itunes_api)
+        await _close_if_supported(apple_music_api)
+        _detach_handlers(root_logger, added_handlers)

@@ -99,6 +99,15 @@ class DownloadService:
         if self.log_callback:
             self.log_callback(message)
 
+    @staticmethod
+    async def _close_client(client: Any) -> None:
+        close = getattr(client, "close", None)
+        if close is None:
+            return
+        result = close()
+        if asyncio.iscoroutine(result):
+            await result
+
     async def _create_downloader(self, job: DownloadJob) -> AppleMusicDownloader:
         codec = SongCodec(job.song_codec)
         artist_auto_select = (
@@ -123,45 +132,52 @@ class DownloadService:
                     f"已自动连接到 wrapper：{resolved_ip}（原设置为 {job.wrapper_decrypt_ip}）"
                 )
                 job.wrapper_decrypt_ip = resolved_ip
-        apple_music_api = await AppleMusicApi.create(
-            storefront=None,
-            language=job.language,
-            media_user_token=self.media_user_token,
-            network_config=network_config,
-        )
-        if not apple_music_api.active_subscription:
-            raise RuntimeError("当前账号没有可用的 Apple Music 订阅。")
+        apple_music_api = None
+        itunes_api = None
+        try:
+            apple_music_api = await AppleMusicApi.create(
+                storefront=None,
+                language=job.language,
+                media_user_token=self.media_user_token,
+                network_config=network_config,
+            )
+            if not apple_music_api.active_subscription:
+                raise RuntimeError("当前账号没有可用的 Apple Music 订阅。")
 
-        itunes_api = ItunesApi(
-            apple_music_api.storefront,
-            apple_music_api.language,
-            network_config=network_config,
-        )
-        interface = AppleMusicInterface(apple_music_api, itunes_api)
-        song_interface = AppleMusicSongInterface(interface)
-        base_downloader = AppleMusicBaseDownloader(
-            output_path=job.output_path,
-            temp_path=str(self.paths.temp_dir),
-            overwrite=job.overwrite,
-            save_cover=job.save_cover,
-            save_playlist=job.save_playlist,
-            use_wrapper=job.use_wrapper,
-            wrapper_decrypt_ip=job.wrapper_decrypt_ip,
-            network_config=network_config,
-        )
-        song_downloader = AppleMusicSongDownloader(
-            base_downloader=base_downloader,
-            interface=song_interface,
-            codec_priority=[codec],
-        )
-        return AppleMusicDownloader(
-            interface=interface,
-            base_downloader=base_downloader,
-            song_downloader=song_downloader,
-            music_video_downloader=None,
-            uploaded_video_downloader=None,
-            artist_auto_select=artist_auto_select,
-        )
+            itunes_api = ItunesApi(
+                apple_music_api.storefront,
+                apple_music_api.language,
+                network_config=network_config,
+            )
+            interface = AppleMusicInterface(apple_music_api, itunes_api)
+            song_interface = AppleMusicSongInterface(interface)
+            base_downloader = AppleMusicBaseDownloader(
+                output_path=job.output_path,
+                temp_path=str(self.paths.temp_dir),
+                overwrite=job.overwrite,
+                save_cover=job.save_cover,
+                save_playlist=job.save_playlist,
+                use_wrapper=job.use_wrapper,
+                wrapper_decrypt_ip=job.wrapper_decrypt_ip,
+                network_config=network_config,
+            )
+            song_downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=song_interface,
+                codec_priority=[codec],
+            )
+            return AppleMusicDownloader(
+                interface=interface,
+                base_downloader=base_downloader,
+                song_downloader=song_downloader,
+                music_video_downloader=None,
+                uploaded_video_downloader=None,
+                artist_auto_select=artist_auto_select,
+            )
+        except Exception:
+            await self._close_client(itunes_api)
+            await self._close_client(apple_music_api)
+            raise
 
     @staticmethod
     def _validate_url_kind(url_info) -> None:
@@ -175,26 +191,39 @@ class DownloadService:
         total_inputs = len(job.retry_items) if job.retry_items else len(job.urls)
         result = DownloadResult(total_urls=total_inputs, output_path=job.output_path)
         downloader = await self._create_downloader(job)
-        self._emit(f"已连接 Apple Music storefront: {downloader.interface.apple_music_api.storefront}")
+        try:
+            self._emit(
+                f"已连接 Apple Music storefront: {downloader.interface.apple_music_api.storefront}"
+            )
 
-        if job.retry_items:
-            await self._run_retry_items(job, downloader, result)
+            if job.retry_items:
+                await self._run_retry_items(job, downloader, result)
+                result.finished_at = time.time()
+                self._emit(
+                    "任务完成: "
+                    f"成功 {result.downloaded_items}，跳过 {result.skipped_items}，错误 {result.errors}"
+                )
+                return result
+
+            for index, url in enumerate(job.urls, 1):
+                await self._process_url(job, downloader, result, url, index, len(job.urls))
+
             result.finished_at = time.time()
             self._emit(
                 "任务完成: "
                 f"成功 {result.downloaded_items}，跳过 {result.skipped_items}，错误 {result.errors}"
             )
             return result
+        finally:
+            await self._close_downloader_resources(downloader)
 
-        for index, url in enumerate(job.urls, 1):
-            await self._process_url(job, downloader, result, url, index, len(job.urls))
-
-        result.finished_at = time.time()
-        self._emit(
-            "任务完成: "
-            f"成功 {result.downloaded_items}，跳过 {result.skipped_items}，错误 {result.errors}"
-        )
-        return result
+    async def _close_downloader_resources(self, downloader: AppleMusicDownloader) -> None:
+        interface = getattr(downloader, "interface", None)
+        for client in (
+            getattr(interface, "apple_music_api", None),
+            getattr(interface, "itunes_api", None),
+        ):
+            await self._close_client(client)
 
     async def _run_retry_items(
         self,

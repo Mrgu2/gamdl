@@ -24,12 +24,13 @@ from gamdl.web_gui import DEFAULT_HOST, DEFAULT_PORT, create_server
 
 
 def _pick_available_port(host: str, preferred_port: int) -> int:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
     with suppress(OSError):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
             probe.bind((host, preferred_port))
             return preferred_port
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
         probe.bind((host, 0))
         return int(probe.getsockname()[1])
 
@@ -156,7 +157,7 @@ def main() -> None:
             "缺少 pywebview，无法启动桌面窗口。请先安装桌面依赖。"
         ) from exc
 
-    url = f"http://{args.host}:{server.server_address[1]}"
+    url = server.local_url(args.host)
     window = webview.create_window(
         "Apple Music Downloader",
         url=url,
@@ -170,6 +171,7 @@ def main() -> None:
 
     server.shutdown()
     server.server_close()
+    thread.join(timeout=2)
 
 
 if __name__ == "__main__":

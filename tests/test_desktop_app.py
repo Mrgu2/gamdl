@@ -1,5 +1,7 @@
 import socket
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -108,6 +110,46 @@ class DesktopAppTests(unittest.TestCase):
                 output_path.read_text(encoding="utf-8"),
                 '{"error": "inner helper failed"}',
             )
+
+    def test_main_joins_server_thread_after_webview_exits(self):
+        args = SimpleNamespace(
+            macos_login_helper=False,
+            host="127.0.0.1",
+            port=8765,
+        )
+        settings = SimpleNamespace(
+            log_level="INFO",
+            use_wrapper=False,
+            song_codec="aac-legacy",
+            wrapper_decrypt_ip="127.0.0.1:10022",
+            network_mode="auto",
+            proxy_url="",
+        )
+        fake_server = MagicMock()
+        fake_server.local_url.return_value = "http://127.0.0.1:8765/session/"
+        fake_thread = MagicMock()
+        fake_webview = types.SimpleNamespace(
+            create_window=MagicMock(),
+            start=MagicMock(),
+        )
+
+        with (
+            patch("gamdl.desktop_app.argparse.ArgumentParser.parse_args", return_value=args),
+            patch("gamdl.desktop_app.AppSettingsStore") as settings_store_cls,
+            patch("gamdl.desktop_app.AppLogStore", return_value=MagicMock()),
+            patch("gamdl.desktop_app.configure_app_logging"),
+            patch("gamdl.desktop_app._pick_available_port", return_value=8765),
+            patch("gamdl.desktop_app.create_server", return_value=fake_server),
+            patch("gamdl.desktop_app.threading.Thread", return_value=fake_thread),
+            patch.dict(sys.modules, {"webview": fake_webview}),
+        ):
+            settings_store_cls.return_value.load.return_value = settings
+            main()
+
+        fake_thread.start.assert_called_once()
+        fake_server.shutdown.assert_called_once()
+        fake_server.server_close.assert_called_once()
+        fake_thread.join.assert_called_once_with(timeout=2)
 
     def test_file_actions_use_open_on_macos(self):
         file_actions = DesktopFileActions(current_platform="Darwin")

@@ -6,6 +6,7 @@ import logging
 import queue
 import re
 import secrets
+import socket
 import threading
 import time
 import webbrowser
@@ -45,6 +46,7 @@ from .app import (
     configure_app_logging,
     resolve_executable,
 )
+from .app.auth import TokenDeletionError
 from .app.settings import AppSettings
 from .desktop_runtime import detect_desktop_runtime
 from .downloader import ArtistAutoSelect
@@ -57,6 +59,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 API_REQUEST_TOKEN_HEADER = "X-Gamdl-Request-Token"
 API_REQUEST_TOKEN_PLACEHOLDER = "__GAMDL_API_REQUEST_TOKEN__"
+SESSION_BASE_PATH_PLACEHOLDER = "__GAMDL_SESSION_BASE_PATH__"
 GUI_SETTINGS_DEFAULTS = AppSettingsStore(AppPaths()).defaults().__dict__
 SUPPORTED_BROWSER_IMPORTS = [browser.value for browser in BrowserType]
 INVALID_APPLE_MUSIC_AUTH_MESSAGE = "Apple Music 登录已失效，请重新登录。"
@@ -70,6 +73,16 @@ SUPPORTED_DOWNLOAD_KINDS = {
 }
 SUPPORTED_CONVERSION_FORMATS = {"flac", "mp3"}
 DEFAULT_WRAPPER_DECRYPT_IP = "127.0.0.1:10022"
+LOCAL_SESSION_TOKEN_ERROR = "需要有效本地会话令牌，请刷新页面重试。"
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'"
+)
 SUPPORTED_ARTIST_AUTO_SELECT = {
     option.value: str(option)
     for option in (
@@ -106,6 +119,20 @@ def _is_loopback_hostname(host: str) -> bool:
         return ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+def _is_ipv6_host(host: str) -> bool:
+    try:
+        return ip_address(str(host)).version == 6
+    except ValueError:
+        return False
+
+
+def _format_host_for_url(host: str) -> str:
+    normalized = str(host).strip()
+    if _is_ipv6_host(normalized):
+        return f"[{normalized}]"
+    return normalized
 
 
 def parse_url_input(text: str) -> list[str]:
@@ -232,8 +259,14 @@ class JobManager:
         self.jobs: dict[str, Job] = {}
         self.jobs_lock = threading.Lock()
         self.job_queue: queue.Queue[str] = queue.Queue()
+        self._shutdown = False
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
+
+    def shutdown(self, timeout: float = 1.0) -> None:
+        self._shutdown = True
+        self.job_queue.put("")
+        self.worker.join(timeout=timeout)
 
     def create_job(self, payload: dict[str, Any]) -> Job:
         kind = str(payload.get("kind") or "download").strip().lower()
@@ -360,6 +393,8 @@ class JobManager:
         while True:
             job_id = self.job_queue.get()
             try:
+                if self._shutdown:
+                    return
                 job = self.get_job(job_id)
                 if not job or job.status == "cancelled":
                     continue
@@ -433,7 +468,10 @@ class JobManager:
             )
         except Exception as exc:
             if _is_invalid_apple_music_auth_error(exc):
-                self.auth_manager.invalidate_session(INVALID_APPLE_MUSIC_AUTH_MESSAGE)
+                try:
+                    self.auth_manager.invalidate_session(INVALID_APPLE_MUSIC_AUTH_MESSAGE)
+                except TokenDeletionError as delete_exc:
+                    raise RuntimeError(str(delete_exc)) from delete_exc
                 raise RuntimeError(INVALID_APPLE_MUSIC_AUTH_MESSAGE) from exc
             raise
         job.result = result.to_dict()
@@ -469,10 +507,16 @@ class WebGuiHandler(BaseHTTPRequestHandler):
         if not self._verify_local_request():
             return
         parsed = urlparse(self.path)
-        if parsed.path == "/":
+        route_path = self._route_path(parsed.path)
+        if route_path is None:
+            self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+            return
+        if route_path == "/":
             self._send_html()
             return
-        if parsed.path == "/api/settings":
+        if not self._verify_request_token():
+            return
+        if route_path == "/api/settings":
             settings = self.server.settings_store.load()
             wrapper_status = self.server.wrapper_manager.probe_status(
                 settings.wrapper_decrypt_ip,
@@ -486,24 +530,24 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if parsed.path == "/api/jobs":
+        if route_path == "/api/jobs":
             self._send_json({"jobs": self.server.job_manager.list_jobs()})
             return
-        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/open-with-options"):
-            self._handle_job_open_with_options(parsed.path)
+        if route_path.startswith("/api/jobs/") and route_path.endswith("/open-with-options"):
+            self._handle_job_open_with_options(route_path)
             return
-        if parsed.path.startswith("/api/jobs/"):
-            job_id = parsed.path.rsplit("/", 1)[-1]
+        if route_path.startswith("/api/jobs/"):
+            job_id = route_path.rsplit("/", 1)[-1]
             job = self.server.job_manager.get_job(job_id)
             if not job:
                 self._send_json({"error": "Job not found"}, HTTPStatus.NOT_FOUND)
                 return
             self._send_json(job.to_dict())
             return
-        if parsed.path == "/api/auth/status":
+        if route_path == "/api/auth/status":
             self._send_json({"session": self.server.auth_manager.get_session_status(verify=False).__dict__})
             return
-        if parsed.path == "/api/logs":
+        if route_path == "/api/logs":
             self._send_json(
                 {
                     "channels": self.server.log_store.export(),
@@ -511,7 +555,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if parsed.path == "/api/about":
+        if route_path == "/api/about":
             settings = self.server.settings_store.load()
             self._send_json(
                 {
@@ -538,8 +582,12 @@ class WebGuiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        parsed = urlparse(self.path)
         if not self._verify_local_request():
+            return
+        parsed = urlparse(self.path)
+        route_path = self._route_path(parsed.path)
+        if route_path is None:
+            self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         if not self._verify_post_request():
             return
@@ -549,7 +597,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
-        if parsed.path == "/api/preview":
+        if route_path == "/api/preview":
             urls = parse_url_input(payload.get("url_text", ""))
             preview = [classify_url(url) for url in urls]
             self._send_json(
@@ -561,7 +609,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/settings":
+        if route_path == "/api/settings":
             try:
                 settings = self.server.settings_store.save(payload)
             except ValueError as exc:
@@ -591,7 +639,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/settings/validate":
+        if route_path == "/api/settings/validate":
             try:
                 output_path = self.server.settings_store.validate_output_path(
                     payload.get("output_path", "")
@@ -602,7 +650,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"output_path": output_path})
             return
 
-        if parsed.path == "/api/wrapper/start":
+        if route_path == "/api/wrapper/start":
             settings = self.server.settings_store.load()
             requested_ip = payload.get("wrapper_decrypt_ip", settings.wrapper_decrypt_ip)
             try:
@@ -654,11 +702,11 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/desktop/select-folder":
+        if route_path == "/api/desktop/select-folder":
             self._handle_output_folder_selection()
             return
 
-        if parsed.path == "/api/desktop/select-file":
+        if route_path == "/api/desktop/select-file":
             self._handle_existing_path_selection(
                 picker=self.server.file_picker,
                 unsupported_message="当前环境不支持原生文件选择器。",
@@ -667,7 +715,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/desktop/select-input-folder":
+        if route_path == "/api/desktop/select-input-folder":
             self._handle_existing_path_selection(
                 picker=self.server.input_folder_picker,
                 unsupported_message="当前环境不支持原生输入目录选择器。",
@@ -676,7 +724,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/jobs":
+        if route_path == "/api/jobs":
             try:
                 job = self.server.job_manager.create_job(payload)
             except ValueError as exc:
@@ -688,8 +736,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json(job.to_dict(), HTTPStatus.CREATED)
             return
 
-        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
-            job_id = parsed.path.split("/")[-2]
+        if route_path.startswith("/api/jobs/") and route_path.endswith("/cancel"):
+            job_id = route_path.split("/")[-2]
             cancelled = self.server.job_manager.cancel_job(job_id)
             if not cancelled:
                 self._send_json(
@@ -700,23 +748,23 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
-        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/retry-failed"):
-            self._handle_retry_failed_job(parsed.path)
+        if route_path.startswith("/api/jobs/") and route_path.endswith("/retry-failed"):
+            self._handle_retry_failed_job(route_path)
             return
 
-        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/open-output"):
-            self._handle_job_file_action(parsed.path, "open-output", payload)
+        if route_path.startswith("/api/jobs/") and route_path.endswith("/open-output"):
+            self._handle_job_file_action(route_path, "open-output", payload)
             return
 
-        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/open-latest-file"):
-            self._handle_job_file_action(parsed.path, "open-latest-file", payload)
+        if route_path.startswith("/api/jobs/") and route_path.endswith("/open-latest-file"):
+            self._handle_job_file_action(route_path, "open-latest-file", payload)
             return
 
-        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/reveal-latest-file"):
-            self._handle_job_file_action(parsed.path, "reveal-latest-file", payload)
+        if route_path.startswith("/api/jobs/") and route_path.endswith("/reveal-latest-file"):
+            self._handle_job_file_action(route_path, "reveal-latest-file", payload)
             return
 
-        if parsed.path == "/api/auth/import-browser":
+        if route_path == "/api/auth/import-browser":
             settings = self.server.settings_store.load()
             if not settings.browser_import_enabled:
                 self._send_json(
@@ -743,7 +791,7 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"session": session.__dict__})
             return
 
-        if parsed.path == "/api/auth/login-webview":
+        if route_path == "/api/auth/login-webview":
             browser_name = payload.get("browser", BrowserType.CHROME.value)
             if browser_name not in SUPPORTED_BROWSER_IMPORTS:
                 self._send_json({"error": "Unsupported browser"}, HTTPStatus.BAD_REQUEST)
@@ -763,16 +811,24 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             self._send_json({"session": session.__dict__})
             return
 
-        if parsed.path == "/api/auth/logout":
-            self._send_json({"session": self.server.auth_manager.logout().__dict__})
+        if route_path == "/api/auth/logout":
+            try:
+                session = self.server.auth_manager.logout()
+            except TokenDeletionError as exc:
+                self._send_json(
+                    {"error": str(exc), "category": "login"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            self._send_json({"session": session.__dict__})
             return
 
-        if parsed.path == "/api/diagnostics/export":
+        if route_path == "/api/diagnostics/export":
             bundle = self.server.diagnostics.export_bundle()
             self._send_json({"bundle_path": str(bundle)})
             return
 
-        if parsed.path == "/api/logs/open-folder":
+        if route_path == "/api/logs/open-folder":
             try:
                 self.server.file_actions.open_output(str(self.server.paths.logs_dir))
             except RuntimeError as exc:
@@ -825,32 +881,59 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                 HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
             )
             return False
+        return self._verify_request_token()
 
+    def _verify_request_token(self) -> bool:
         request_token = str(self.headers.get(API_REQUEST_TOKEN_HEADER) or "").strip()
         if not secrets.compare_digest(request_token, self.server.api_request_token):
             self._send_json(
-                {"error": "请求缺少有效的本地会话令牌。请刷新页面后重试。"},
+                {"error": LOCAL_SESSION_TOKEN_ERROR},
                 HTTPStatus.FORBIDDEN,
             )
             return False
         return True
 
+    def _route_path(self, request_path: str) -> str | None:
+        session_base_path = self.server.session_base_path
+        if request_path == session_base_path:
+            return "/"
+        base_with_trailing_slash = f"{session_base_path}/"
+        if request_path.startswith(base_with_trailing_slash):
+            suffix = request_path[len(session_base_path):]
+            return suffix if suffix.startswith("/") else f"/{suffix}"
+        return None
+
+    def _send_security_headers(self) -> None:
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+
     def _send_html(self) -> None:
-        html = INDEX_HTML.replace(API_REQUEST_TOKEN_PLACEHOLDER, self.server.api_request_token)
+        html = (
+            INDEX_HTML.replace(API_REQUEST_TOKEN_PLACEHOLDER, self.server.api_request_token)
+            .replace(SESSION_BASE_PATH_PLACEHOLDER, self.server.session_base_path)
+        )
         body = html.encode("utf-8")
         self.send_response(HTTPStatus.OK)
+        self._send_security_headers()
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
 
     def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
+        self._send_security_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
 
     @staticmethod
     def _build_preview_summary(preview: list[dict[str, Any]]) -> dict[str, int]:
@@ -1126,6 +1209,9 @@ class WebGuiHandler(BaseHTTPRequestHandler):
 
 
 class WebGuiServer(ThreadingHTTPServer):
+    address_family = socket.AF_INET
+    daemon_threads = True
+
     def __init__(
         self,
         server_address: tuple[str, int],
@@ -1150,6 +1236,11 @@ class WebGuiServer(ThreadingHTTPServer):
         self.input_folder_picker = input_folder_picker
         self.file_actions = file_actions or DesktopFileActions()
         self.api_request_token = secrets.token_urlsafe(32)
+        self.session_base_path = f"/{secrets.token_urlsafe(18)}"
+
+    def server_close(self) -> None:
+        self.job_manager.shutdown()
+        super().server_close()
 
     def set_log_level(self, level: str) -> None:
         for logger_name in ("gamdl", "gamdl.app.auth", "gamdl.app.download", "gamdl.app.web"):
@@ -1169,6 +1260,18 @@ class WebGuiServer(ThreadingHTTPServer):
             ),
         )
 
+    def local_url(self, bind_host: str) -> str:
+        formatted_host = _format_host_for_url(bind_host)
+        return f"http://{formatted_host}:{self.server_address[1]}{self.session_base_path}/"
+
+    def public_origin(self, bind_host: str) -> str:
+        formatted_host = _format_host_for_url(bind_host)
+        return f"http://{formatted_host}:{self.server_address[1]}"
+
+
+class WebGuiServerIPv6(WebGuiServer):
+    address_family = socket.AF_INET6
+
 
 def create_server(
     host: str,
@@ -1182,7 +1285,8 @@ def create_server(
     file_actions: DesktopFileActions | None = None,
 ) -> WebGuiServer:
     validated_host = validate_bind_host(host)
-    return WebGuiServer(
+    server_cls = WebGuiServerIPv6 if _is_ipv6_host(validated_host) else WebGuiServer
+    return server_cls(
         (validated_host, port),
         WebGuiHandler,
         paths or AppPaths(),
@@ -1210,8 +1314,12 @@ def main() -> None:
     log_store = AppLogStore()
     configure_app_logging(paths, log_store, settings_store.load().log_level)
     server = create_server(args.host, args.port, paths=paths, log_store=log_store)
-    url = f"http://{args.host}:{server.server_address[1]}"
-    print(f"Apple Music Downloader Web GUI listening on {url}")
+    url = server.local_url(args.host)
+    print(
+        "Apple Music Downloader Web GUI listening on "
+        f"{url}"
+    )
+    print(f"Loopback origin: {server.public_origin(args.host)}")
     if not args.no_open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
@@ -3052,7 +3160,7 @@ softwareupdate --install-rosetta</pre>
 rm -rf rootfs wrapper Dockerfile wrapper.zip
 curl -fsSL https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest \
   | grep browser_download_url \
-  | grep 'Wrapper.x86_64.*\.zip' \
+  | grep 'Wrapper.x86_64.*\\.zip' \
   | cut -d '"' -f 4 \
   | xargs -n 1 curl -L -o wrapper.zip
 unzip -o wrapper.zip
@@ -3125,6 +3233,7 @@ docker stop wrapper-latest-10022</pre>
 
   <script>
     const API_REQUEST_TOKEN = '__GAMDL_API_REQUEST_TOKEN__';
+    const SESSION_BASE_PATH = '__GAMDL_SESSION_BASE_PATH__';
 
     const state = {
       jobs: [],
@@ -3155,7 +3264,7 @@ docker stop wrapper-latest-10022</pre>
       const headers = new Headers(options.headers || {});
       headers.set('Content-Type', 'application/json');
       headers.set('X-Gamdl-Request-Token', API_REQUEST_TOKEN);
-      const response = await fetch(path, {
+      const response = await fetch(`${SESSION_BASE_PATH}${path}`, {
         ...options,
         headers,
       });
@@ -3323,7 +3432,7 @@ docker stop wrapper-latest-10022</pre>
     function compactPath(path) {
       const value = String(path || '').trim();
       if (!value) return '未设置';
-      const normalized = value.replace(/^\/Users\/[^/]+/, '~');
+      const normalized = value.replace(/^\\/Users\\/[^/]+/, '~');
       if (normalized.length <= 34) {
         return normalized;
       }
@@ -3738,7 +3847,7 @@ docker stop wrapper-latest-10022</pre>
     function syncArtistDownloadOptionsFromInput() {
       const input = document.getElementById('url-input');
       if (!input) return;
-      const tokens = input.value.split(/\s+/).filter(Boolean);
+      const tokens = input.value.split(/\\s+/).filter(Boolean);
       const hasArtist = tokens.some((url) => url.includes('music.apple.com') && url.includes('/artist/'));
       if (hasArtist) {
         syncArtistDownloadOptions([{ kind: 'artist', valid: true }]);

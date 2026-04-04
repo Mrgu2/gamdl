@@ -4,8 +4,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from gamdl.api.apple_music_api import _matches_apple_music_cookie_domain
-from gamdl.api.apple_music_api import AppleMusicApi
+from gamdl.api.apple_music_api import (
+    WRAPPER_ACCOUNT_URL_ERROR,
+    _matches_apple_music_cookie_domain,
+    normalize_wrapper_account_url,
+    AppleMusicApi,
+)
 
 
 class AppleMusicApiCookieTests(unittest.TestCase):
@@ -66,6 +70,24 @@ class AppleMusicApiCookieTests(unittest.TestCase):
             result = asyncio.run(api._get_token())
 
         self.assertEqual(result, token)
+
+    def test_normalize_wrapper_account_url_accepts_loopback(self):
+        self.assertEqual(
+            normalize_wrapper_account_url("http://127.0.0.1:30020"),
+            "http://127.0.0.1:30020/",
+        )
+        self.assertEqual(
+            normalize_wrapper_account_url("http://localhost:30020/account"),
+            "http://localhost:30020/account/",
+        )
+
+    def test_normalize_wrapper_account_url_rejects_non_loopback(self):
+        with self.assertRaisesRegex(ValueError, WRAPPER_ACCOUNT_URL_ERROR):
+            normalize_wrapper_account_url("http://192.168.1.8:30020/")
+
+    def test_normalize_wrapper_account_url_rejects_invalid_port_with_consistent_error(self):
+        with self.assertRaisesRegex(ValueError, WRAPPER_ACCOUNT_URL_ERROR):
+            normalize_wrapper_account_url("http://127.0.0.1:99999/")
 
 
 if __name__ == "__main__":

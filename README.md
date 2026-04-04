@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.1.1
+# Gamdl Desktop Fork 1.1.2
 
-[![Release](https://img.shields.io/badge/release-1.1.1-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.1.2-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.1.1` 的目标很明确：
+`Gamdl Desktop Fork 1.1.2` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单、艺术家下载
@@ -26,9 +26,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.1.1 发布内容
+## 1.1.2 发布内容
 
-正式版 `1.1.1` 这次继续发布 macOS 桌面包：
+正式版 `1.1.2` 这次继续发布 macOS 桌面包：
 
 - `Apple Music Downloader-arm64.dmg`
   - 面向 Apple Silicon Mac
@@ -39,16 +39,16 @@
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖一轮登录失效纠正、本地 Web UI 安全面继续收紧、统一网络模式与 artist Top Songs 落盘修正，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖一轮 token 持久化安全收口、Web UI 本地接口进一步加固、CLI/桌面端生命周期稳定性修复，以及 loopback / wrapper 校验的一致化，并继续沿用之前 release 的分发方式：
 
-- 下载任务如果遇到 Apple 返回 `403 Invalid authentication / 40300`，现在会立即清空本地伪“已连接”会话并提示重新登录
-- 本地 Web UI 继续收紧：现在只接受 loopback `Host`，并在写入 `innerHTML` 前统一转义下载预览和账号状态里的用户可控字段
-- `/api/wrapper/start` 启动前会复用本机地址校验，不再接受任意远端主机作为探测目标
-- 设置页新增三档 `网络模式`（自动 / 直连 / 高级代理），API、登录校验、wrapper 与下载子进程统一接入同一套代理策略
-- 自定义代理模式下会为 `localhost / 127.0.0.1 / ::1` 显式直连，避免本机 wrapper / m3u8 / account API 被误送进代理
-- `artist / Top Songs` 改为稳定写入 `歌手名/Top Songs/`，文件名会保留 `[title_id]` 后缀，失败重试也会继承原目录上下文，避免同名覆盖或回退到专辑目录
-- 诊断包里的 `settings.json` 改成白名单导出，并继续对代理凭据与常见 token / Bearer 日志做脱敏
-- 依赖安全升级：`yt-dlp`、`pillow` 以及相关锁文件依赖提升到包含公开修复的版本区间
+- 桌面版不再把 Apple Music token 回退写入明文 `.token`；如果系统 keyring / Keychain 不可用，会直接拒绝持久化登录态并提示修复本机凭据存储
+- 当 keyring 删除失败时，当前进程会立即清空内存 token 缓存；登出和会话失效清理也会先清掉本地 `session.json`，避免 UI 长时间残留伪“已登录”
+- 本地 Web UI 的敏感 GET / POST 现在统一要求 `X-Gamdl-Request-Token`，并对 HTML / JSON 响应统一附带 `X-Frame-Options`、CSP、`nosniff`、`no-referrer` 与 `no-store`
+- wrapper account API 地址现在显式限制为 `localhost / 127.0.0.1 / ::1`；非法端口和非法 `--wrapper-account-url` 会收敛成可读的用户输入错误
+- CLI 收尾时只会关闭实际支持的 API 对象，`--synced-lyrics-only` 也不再因为未初始化状态直接崩溃
+- 下载服务、CLI 和桌面版在初始化或关闭中途失败时会主动回收 API client、Web server 线程与日志资源，减少回归测试和实际运行中的残余连接
+- Web GUI、macOS 桌面版和 Windows 启动器现在一致支持 `::1` loopback 绑定，并生成真实可打开的本地会话 URL
+- Web GUI 相关测试显式禁用代理、等待后台任务终态并关闭 opener，减少本机代理环境下的资源泄漏和回归串扰
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -110,7 +110,7 @@ macOS 包说明：
 
 ### Windows
 
-当前 `1.1.1` release 不附带 Windows 安装包。
+当前 `1.1.2` release 不附带 Windows 安装包。
 
 Windows 包说明：
 
@@ -127,6 +127,11 @@ Windows 包说明：
 3. 如果包含艺术家链接，先选择要展开下载的艺术家内容
 4. 确认输出目录和下载设置
 5. 加入任务队列并在 `任务` 页面查看进度
+
+登录安全说明：
+
+- 桌面版只会把 Apple Music 登录态持久化到系统 keyring / Keychain
+- 如果你的系统凭据存储不可用，界面会提示重新启用，而不会再把 token 明文写入本地文件
 
 如果任务里有失败歌曲，`任务` 页面会提供“重试失败歌曲”入口，避免手动回去重新找原始链接。
 
@@ -231,6 +236,8 @@ docker run --rm -it \
 
 注意：不要映射 wrapper 的 account 端口。wrapper 在容器里仍需要监听 `0.0.0.0`，但宿主机端口只绑定到 `127.0.0.1`，这样桌面版可访问，局域网其他主机不可访问。
 
+再次强调：不要把 wrapper 的 account API 暴露到 `0.0.0.0` 或公网 / 局域网可达地址；桌面版默认只信任 `localhost / 127.0.0.1 / ::1`。
+
 ```bash
 docker run -d \
   --platform linux/amd64 \
@@ -302,10 +309,15 @@ gamdl --help
 这里会保存在 macOS `Application Support` 下的当前桌面版目录中：
 
 - 设置
-- 登录态
+- 登录态元数据
 - 日志
 - 诊断包
 - 临时文件
+
+说明：
+
+- 真正的 Apple Music token 不应再以明文文件形式保存在这里
+- 如果你看到旧版本遗留的 `.token` 文件，新版本启动时会自动删除
 
 这套桌面版数据与 CLI 的配置文件分离，不会覆盖你自己的命令行配置。
 

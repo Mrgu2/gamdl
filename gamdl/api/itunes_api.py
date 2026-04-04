@@ -45,6 +45,11 @@ class ItunesApi:
             **httpx_client_kwargs(self.network_config),
         )
 
+    async def close(self) -> None:
+        client = getattr(self, "client", None)
+        if client is not None:
+            await client.aclose()
+
     async def get_lookup_result(
         self,
         media_id: str,

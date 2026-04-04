@@ -1,8 +1,9 @@
+import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -13,6 +14,16 @@ from gamdl.web_gui import WebGuiHandler, WebGuiServer
 class WrapperDecryptIpValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
+        self._proxy_env_backup = {
+            name: os.environ.get(name)
+            for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+        }
+        self._getproxies_backup = urllib.request.getproxies
+        self._getproxies_env_backup = urllib.request.getproxies_environment
+        for name in self._proxy_env_backup:
+            os.environ.pop(name, None)
+        urllib.request.getproxies = lambda: {}
+        urllib.request.getproxies_environment = lambda: {}
         self.paths = AppPaths(base_dir=Path(self.tempdir.name), app_name="GamdlTest")
         self.server = WebGuiServer(
             ("127.0.0.1", 0),
@@ -25,44 +36,64 @@ class WrapperDecryptIpValidationTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.server.server_address
+        self.host = host
+        self.port = port
         self.base_url = f"http://{host}:{port}"
+        self.app_base_url = f"{self.base_url}{self.server.session_base_path}"
 
     def tearDown(self) -> None:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=1)
+        for name, value in self._proxy_env_backup.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        urllib.request.getproxies = self._getproxies_backup
+        urllib.request.getproxies_environment = self._getproxies_env_backup
         self.tempdir.cleanup()
 
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict | None = None,
+        include_token: bool = True,
+    ) -> tuple[int, bytes]:
+        body = b""
+        headers = {"Connection": "close"}
+        if include_token:
+            headers["X-Gamdl-Request-Token"] = self.server.api_request_token
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        try:
+            connection.request(method, f"{self.server.session_base_path}{path}", body=body, headers=headers)
+            response = connection.getresponse()
+            try:
+                return response.status, response.read()
+            finally:
+                response.close()
+        finally:
+            connection.close()
+
     def _get_json(self, path: str) -> dict:
-        with urllib.request.urlopen(f"{self.base_url}{path}") as response:
-            return json.load(response)
+        status, body = self._request(path)
+        self.assertEqual(status, 200)
+        return json.loads(body)
 
     def _post_json_error(self, path: str, payload: dict) -> tuple[int, dict]:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Gamdl-Request-Token": self.server.api_request_token,
-            },
-            method="POST",
-        )
-        with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(request)
-        return error.exception.code, json.loads(error.exception.read().decode("utf-8"))
+        status, body = self._request(path, method="POST", payload=payload)
+        self.assertGreaterEqual(status, 400)
+        return status, json.loads(body.decode("utf-8"))
 
     def _post_json(self, path: str, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Gamdl-Request-Token": self.server.api_request_token,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request) as response:
-            return json.load(response)
+        status, body = self._request(path, method="POST", payload=payload)
+        self.assertEqual(status, 200)
+        return json.loads(body)
 
     def test_post_settings_rejects_invalid_wrapper_decrypt_ip(self):
         status, data = self._post_json_error(

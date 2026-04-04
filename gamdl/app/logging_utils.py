@@ -47,6 +47,18 @@ class AppLogStore(logging.Handler):
         return {name: list(lines) for name, lines in self.channels.items()}
 
 
+class SafeStreamHandler(logging.StreamHandler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except ValueError:
+            # Test harnesses can close captured stderr/stdout before late logs flush.
+            return
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        return
+
+
 def _file_handler(path: Path) -> logging.FileHandler:
     handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(CustomLoggerFormatter(use_colors=False))
@@ -62,8 +74,9 @@ def configure_app_logging(paths: AppPaths, log_store: AppLogStore, level: str) -
 
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
+        handler.close()
 
-    stream_handler = logging.StreamHandler()
+    stream_handler = SafeStreamHandler()
     stream_handler.setFormatter(CustomLoggerFormatter())
     root_logger.addHandler(stream_handler)
     root_logger.addHandler(log_store)
@@ -79,4 +92,5 @@ def configure_app_logging(paths: AppPaths, log_store: AppLogStore, level: str) -
         logger.propagate = True
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
+            handler.close()
         logger.addHandler(_file_handler(paths.logs_dir / filename))

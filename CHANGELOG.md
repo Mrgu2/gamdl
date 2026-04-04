@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.2 - 2026-04-04
+
+- 安全硬化：桌面版不再把 Apple Music token 回退写入明文 `.token` 文件；如果系统 keyring / Keychain 不可用，现在会直接拒绝持久化登录态并提示用户修复本机凭据存储
+- 稳定性修复：如果系统 keyring / Keychain 删除失败，桌面版现在会拒绝把会话误写成“已退出 / 已失效”；Web UI 登出接口也会返回明确错误，而不是留下可被后续重新读出的旧 token
+- 稳定性修复：CLI 收尾时现在只会关闭实际支持的 API 对象，不再因为替身对象或注入对象缺少异步 `close()` 而把原本成功的流程错误地以退出码 `1` 结束
+- 稳定性修复：CLI 的 `--synced-lyrics-only` 不再因为未初始化的 `missing_music_video_paths` 直接崩溃
+- 稳定性修复：测试与本地 Web GUI 生命周期进一步收口，日志 handler 不再持续引用已关闭流；Web GUI 服务端现在显式关闭响应连接并在关停时回收后台任务线程，减少回归测试里的残余连接与资源泄漏噪音
+- 安全硬化：除首页 `/` 外，本地 Web UI 的敏感 GET / POST 现在统一要求 `X-Gamdl-Request-Token`，减少同机进程直接读取设置、任务、日志和账号状态的暴露面
+- 安全硬化：本地 HTML 与 JSON 响应现在统一附带 `X-Frame-Options`、CSP、`nosniff`、`no-referrer` 与 `no-store` 安全响应头
+- 安全硬化：wrapper account API 地址现在显式限制为 `localhost / 127.0.0.1 / ::1`，不再接受任意主机 URL
+- 稳定性修复：wrapper account URL 的非法端口现在统一返回桌面端可读错误；Web GUI 相关测试也改为显式禁代理并关闭 opener，避免本机代理环境下的资源泄漏和回归串扰
+- 稳定性修复：下载服务和 CLI 现在会在初始化中途失败时主动关闭已创建的 Apple Music / iTunes API client；macOS 桌面关闭路径也会显式等待本地 Web server 线程退出
+- 安全修复：CLI 现在会把非法 `--wrapper-account-url` 收敛为明确的用户输入错误，不再直接抛出底层 `ValueError`
+- 安全修复：当 keyring 删除失败时，当前进程会立即清空内存中的 token 缓存，避免“退出失败后仍可继续使用旧 token”
+- 测试稳定性修复：Web GUI 的任务元数据测试现在会显式 stub 掉后台下载执行，不再意外命中本机代理或留下 `ResourceWarning: unclosed transport` 噪音
+- 测试稳定性修复：失败任务重试的 Web GUI 回归现在也会等待后台任务跑到终态，避免测试线程退出后还有真实下载 worker 残留
+- 稳定性修复：Web GUI、macOS 桌面版和 Windows 启动器现在一致支持 `::1` loopback 绑定，IPv6 回环地址会使用正确的 socket family 和带方括号的本地 URL
+- 稳定性修复：当 keyring 报告“凭据不存在”时，登出和会话失效清理现在按幂等成功处理，不再把“条目已被外部删除”误判成“系统凭据存储不可用”
+- 稳定性修复：即使 keyring 删除失败，桌面版现在也会先清掉本地 `session.json`，避免 UI 长时间残留伪“已登录”状态
+- 稳定性修复：`gamdl.web_gui --no-open` 和 Windows 启动器展示的地址现在改为真实可打开的会话 URL，而不是缺少随机 session path 的裸 origin
+
 ## 1.1.1 - 2026-04-04
 
 - 修复 Apple Music 登录过期后的误导状态：下载任务如果遇到 Apple 返回 `403 Invalid authentication / 40300`，现在会立即清空本地伪“已连接”会话，并提示用户重新登录，而不是继续显示缓存里的已登录状态

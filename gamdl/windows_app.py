@@ -21,18 +21,19 @@ from gamdl.web_gui import DEFAULT_HOST, DEFAULT_PORT, create_server
 
 
 def _pick_available_port(host: str, preferred_port: int) -> int:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
     with suppress(OSError):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
             probe.bind((host, preferred_port))
             return preferred_port
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
         probe.bind((host, 0))
         return int(probe.getsockname()[1])
 
 
 class WindowsLauncher:
-    def __init__(self, url: str, on_exit) -> None:
+    def __init__(self, url: str, on_exit, public_origin: str | None = None) -> None:
         try:
             import tkinter as tk
             from tkinter import ttk
@@ -41,6 +42,7 @@ class WindowsLauncher:
 
         self._tk = tk
         self._url = url
+        self._public_origin = public_origin or url
         self._on_exit = on_exit
         self.root = tk.Tk()
         self.root.title("Apple Music Downloader")
@@ -68,7 +70,7 @@ class WindowsLauncher:
         ).pack(anchor="w", pady=(10, 8))
         ttk.Label(
             frame,
-            text=f"本地地址: {url}",
+            text=f"会话地址: {self._url}",
             foreground="#5f6368",
             justify="left",
         ).pack(anchor="w", pady=(0, 14))
@@ -143,8 +145,8 @@ def main() -> None:
         server.shutdown()
         server.server_close()
 
-    url = f"http://{args.host}:{server.server_address[1]}"
-    launcher = WindowsLauncher(url, shutdown)
+    url = server.local_url(args.host)
+    launcher = WindowsLauncher(url, shutdown, public_origin=server.public_origin(args.host))
 
     try:
         launcher.run()
