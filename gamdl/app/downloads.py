@@ -27,6 +27,7 @@ from ..downloader.constants import (
     SONG_MEDIA_TYPE,
 )
 from .paths import AppPaths
+from .cancellation import JobCancelledError
 from .wrapper_manager import WrapperManager
 
 logger = logging.getLogger("gamdl.app.download")
@@ -82,10 +83,12 @@ class DownloadService:
         self,
         media_user_token: str,
         log_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
         paths: AppPaths | None = None,
     ) -> None:
         self.media_user_token = media_user_token
         self.log_callback = log_callback
+        self.cancel_callback = cancel_callback
         self.paths = paths or AppPaths()
         self.paths.ensure()
         self.wrapper_manager = WrapperManager()
@@ -98,6 +101,13 @@ class DownloadService:
         logger.info(message)
         if self.log_callback:
             self.log_callback(message)
+
+    def _check_cancel(self, result: DownloadResult) -> None:
+        if not self.cancel_callback or not self.cancel_callback():
+            return
+        result.finished_at = time.time()
+        self._emit("任务取消请求已收到，正在停止下载。")
+        raise JobCancelledError(result.to_dict())
 
     @staticmethod
     async def _close_client(client: Any) -> None:
@@ -190,6 +200,7 @@ class DownloadService:
     async def run(self, job: DownloadJob) -> DownloadResult:
         total_inputs = len(job.retry_items) if job.retry_items else len(job.urls)
         result = DownloadResult(total_urls=total_inputs, output_path=job.output_path)
+        self._check_cancel(result)
         downloader = await self._create_downloader(job)
         try:
             self._emit(
@@ -206,6 +217,7 @@ class DownloadService:
                 return result
 
             for index, url in enumerate(job.urls, 1):
+                self._check_cancel(result)
                 await self._process_url(job, downloader, result, url, index, len(job.urls))
 
             result.finished_at = time.time()
@@ -232,6 +244,7 @@ class DownloadService:
         result: DownloadResult,
     ) -> None:
         for index, retry_item in enumerate(job.retry_items, 1):
+            self._check_cancel(result)
             strategy = _retry_target_strategy(retry_item)
             if strategy == "playlist-track":
                 await self._process_playlist_retry_item(
@@ -305,6 +318,7 @@ class DownloadService:
 
         result.processed_urls += 1
         for item_index, download_item in enumerate(download_queue, 1):
+            self._check_cancel(result)
             item_prefix = f"[Track {item_index}/{len(download_queue)}]"
             await self._process_download_item(
                 downloader,
@@ -442,6 +456,7 @@ class DownloadService:
         source_url: str,
         source_kind: str | None,
     ) -> None:
+        self._check_cancel(result)
         title = _media_title(download_item)
         try:
             if download_item.error:

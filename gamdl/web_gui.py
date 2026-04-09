@@ -42,12 +42,13 @@ from .app import (
     DiagnosticsService,
     DownloadJob,
     DownloadService,
+    JobCancelledError,
     WrapperManager,
     configure_app_logging,
     resolve_executable,
 )
 from .app.auth import TokenDeletionError
-from .app.settings import AppSettings
+from .app.settings import AppSettings, normalize_metadata_language
 from .desktop_runtime import detect_desktop_runtime
 from .downloader import ArtistAutoSelect
 from .downloader.constants import VALID_URL_PATTERN
@@ -193,6 +194,7 @@ def build_download_command(payload: dict[str, Any]) -> list[str]:
         "save_cover",
         "save_playlist",
         "log_level",
+        "language",
         "network_mode",
         "proxy_url",
         "song_codec",
@@ -235,6 +237,12 @@ class Job:
     result: dict[str, Any] | None = None
     error_category: str | None = None
     error_message: str | None = None
+    cancel_requested: bool = False
+    _cancel_event: threading.Event = field(
+        default_factory=threading.Event,
+        repr=False,
+        compare=False,
+    )
 
     def append_log(self, line: str) -> None:
         if line:
@@ -242,8 +250,35 @@ class Job:
             if len(self.logs) > MAX_LOG_LINES:
                 self.logs = self.logs[-MAX_LOG_LINES:]
 
+    def request_cancel(self) -> bool:
+        if self._cancel_event.is_set():
+            return False
+        self.cancel_requested = True
+        self._cancel_event.set()
+        return True
+
+    def is_cancel_requested(self) -> bool:
+        return self._cancel_event.is_set()
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "id": self.id,
+            "urls": list(self.urls),
+            "url_preview": [dict(item) for item in self.url_preview],
+            "payload": dict(self.payload),
+            "command": list(self.command),
+            "kind": self.kind,
+            "status": self.status,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "return_code": self.return_code,
+            "logs": list(self.logs),
+            "result": dict(self.result) if self.result else None,
+            "error_category": self.error_category,
+            "error_message": self.error_message,
+            "cancel_requested": self.cancel_requested,
+        }
 
 
 class JobManager:
@@ -383,10 +418,17 @@ class JobManager:
 
     def cancel_job(self, job_id: str) -> bool:
         job = self.get_job(job_id)
-        if not job or job.status != "queued":
+        if not job or job.status in {"completed", "failed", "cancelled"}:
             return False
-        job.status = "cancelled"
-        job.finished_at = time.time()
+        requested = job.request_cancel()
+        if not requested:
+            return False
+        if job.status == "queued":
+            job.status = "cancelled"
+            job.finished_at = time.time()
+            job.append_log("任务已取消（尚未开始执行）。")
+        else:
+            job.append_log("已收到取消请求，取消中，当前文件完成后停止。")
         return True
 
     def _worker_loop(self) -> None:
@@ -412,6 +454,12 @@ class JobManager:
                 self._run_conversion_job(job)
             else:
                 raise RuntimeError(f"未知任务类型：{job.kind}")
+        except JobCancelledError as exc:
+            job.status = "cancelled"
+            job.return_code = 130
+            if exc.result is not None:
+                job.result = exc.result
+            job.append_log("任务已停止。")
         except Exception as exc:
             error_category = _classify_error(exc)
             error_message = add_network_guidance(str(exc), error_category)
@@ -446,6 +494,7 @@ class JobManager:
         service = DownloadService(
             media_user_token=token,
             log_callback=job.append_log,
+            cancel_callback=job.is_cancel_requested,
             paths=self.paths,
         )
         try:
@@ -457,6 +506,7 @@ class JobManager:
                     save_cover=job.payload["save_cover"],
                     save_playlist=bool(job.payload.get("save_playlist")),
                     log_level=job.payload["log_level"],
+                    language=job.payload.get("language", "zh-CN"),
                     song_codec=job.payload["song_codec"],
                     use_wrapper=job.payload["use_wrapper"],
                     wrapper_decrypt_ip=job.payload["wrapper_decrypt_ip"],
@@ -482,7 +532,10 @@ class JobManager:
             job.error_message = "任务包含失败项，请查看日志。"
 
     def _run_conversion_job(self, job: Job) -> None:
-        service = ConversionService(log_callback=job.append_log)
+        service = ConversionService(
+            log_callback=job.append_log,
+            cancel_callback=job.is_cancel_requested,
+        )
         result = service.run(
             ConversionJobSpec(
                 input_mode=job.payload["input_mode"],
@@ -502,6 +555,13 @@ class JobManager:
 
 class WebGuiHandler(BaseHTTPRequestHandler):
     server_version = "gamdl-web/1.0"
+
+    @staticmethod
+    def _resolve_request_language(payload: dict[str, Any], settings: AppSettings) -> str:
+        requested_language = payload.get("language")
+        if isinstance(requested_language, str) and requested_language.strip():
+            return normalize_metadata_language(requested_language)
+        return settings.language
 
     def do_GET(self) -> None:
         if not self._verify_local_request():
@@ -613,17 +673,18 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             try:
                 settings = self.server.settings_store.save(payload)
             except ValueError as exc:
-                category = (
-                    "network"
-                    if str(exc)
-                    in {
-                        NETWORK_MODE_ERROR,
-                        PROXY_URL_REQUIRED_ERROR,
-                        PROXY_URL_ERROR,
-                        SOCKS_PROXY_SUPPORT_ERROR,
-                    }
-                    else "filesystem"
-                )
+                message = str(exc)
+                if message in {
+                    NETWORK_MODE_ERROR,
+                    PROXY_URL_REQUIRED_ERROR,
+                    PROXY_URL_ERROR,
+                    SOCKS_PROXY_SUPPORT_ERROR,
+                }:
+                    category = "network"
+                elif "元数据语言格式无效" in message:
+                    category = "settings"
+                else:
+                    category = "filesystem"
                 self._send_json({"error": str(exc), "category": category}, HTTPStatus.BAD_REQUEST)
                 return
             self.server.set_log_level(settings.log_level)
@@ -779,10 +840,12 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             try:
                 session = self.server.auth_manager.import_from_browser(
                     BrowserType(browser_name),
-                    language="zh-CN",
+                    language=self._resolve_request_language(payload, settings),
                 )
             except Exception as exc:
                 category = _classify_error(exc)
+                if "元数据语言格式无效" in str(exc):
+                    category = "settings"
                 self._send_json(
                     {"error": add_network_guidance(str(exc), category), "category": category},
                     HTTPStatus.BAD_REQUEST,
@@ -797,12 +860,15 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Unsupported browser"}, HTTPStatus.BAD_REQUEST)
                 return
             try:
+                settings = self.server.settings_store.load()
                 session = self.server.auth_manager.login_with_webview(
                     browser=BrowserType(browser_name),
-                    language="zh-CN",
+                    language=self._resolve_request_language(payload, settings),
                 )
             except Exception as exc:
                 category = _classify_error(exc)
+                if "元数据语言格式无效" in str(exc):
+                    category = "settings"
                 self._send_json(
                     {"error": add_network_guidance(str(exc), category), "category": category},
                     HTTPStatus.BAD_REQUEST,
@@ -1386,6 +1452,7 @@ INDEX_HTML = """<!doctype html>
       --radius-md: 12px;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html, body { height: 100%; }
     body {
       margin: 0;
@@ -3053,6 +3120,25 @@ INDEX_HTML = """<!doctype html>
                 </select>
               </div>
               <div class="field">
+                <label for="metadata-language-select">元数据语言</label>
+                <select id="metadata-language-select">
+                  <option value="zh-CN">简体中文（zh-CN，默认）</option>
+                  <option value="zh-TW">繁体中文（台湾，zh-TW）</option>
+                  <option value="zh-HK">繁体中文（香港，zh-HK）</option>
+                  <option value="ja-JP">日语（ja-JP）</option>
+                  <option value="en-US">英语（en-US）</option>
+                  <option value="ko-KR">韩语（ko-KR）</option>
+                  <option value="__custom__">自定义…</option>
+                </select>
+                <div class="field" id="metadata-language-custom-field" hidden>
+                  <label for="metadata-language-custom">自定义语言代码</label>
+                  <input id="metadata-language-custom" type="text" placeholder="例如 fr-FR" />
+                </div>
+                <div class="muted">影响后续新下载任务的歌曲、专辑、艺人等元数据语言。已下载文件不会自动改名。</div>
+              </div>
+            </div>
+            <div class="grid two">
+              <div class="field">
                 <label for="theme-select">界面主题</label>
                 <select id="theme-select">
                   <option value="warm">暖色</option>
@@ -3388,7 +3474,12 @@ docker stop wrapper-latest-10022</pre>
       }
     }
 
-    function badgeForStatus(status) {
+    function badgeForStatus(jobOrStatus) {
+      const status = typeof jobOrStatus === 'string' ? jobOrStatus : jobOrStatus?.status;
+      const cancelRequested = typeof jobOrStatus === 'object' && Boolean(jobOrStatus?.cancel_requested);
+      if (cancelRequested && status === 'running') {
+        return ['取消中，当前文件完成后停止', 'badge warn'];
+      }
       const statusMap = {
         queued: ['Queued', 'badge'],
         running: ['Running', 'badge warn'],
@@ -3460,6 +3551,49 @@ docker stop wrapper-latest-10022</pre>
       }
     }
 
+    function syncMetadataLanguageControls() {
+      const select = document.getElementById('metadata-language-select');
+      const customField = document.getElementById('metadata-language-custom-field');
+      const customInput = document.getElementById('metadata-language-custom');
+      const isCustom = select?.value === '__custom__';
+      if (customField) {
+        customField.hidden = !isCustom;
+      }
+      if (customInput) {
+        customInput.disabled = !isCustom;
+      }
+    }
+
+    function setMetadataLanguageValue(value) {
+      const select = document.getElementById('metadata-language-select');
+      const customInput = document.getElementById('metadata-language-custom');
+      const normalized = String(value || 'zh-CN').trim() || 'zh-CN';
+      const presetValues = new Set(['zh-CN', 'zh-TW', 'zh-HK', 'ja-JP', 'en-US', 'ko-KR']);
+      if (presetValues.has(normalized)) {
+        select.value = normalized;
+        customInput.value = '';
+      } else {
+        select.value = '__custom__';
+        customInput.value = normalized;
+      }
+      syncMetadataLanguageControls();
+    }
+
+    function readMetadataLanguageValue() {
+      const select = document.getElementById('metadata-language-select');
+      if (select?.value !== '__custom__') {
+        return select?.value || 'zh-CN';
+      }
+      return document.getElementById('metadata-language-custom')?.value.trim() || 'zh-CN';
+    }
+
+    function currentMetadataLanguage() {
+      if (document.getElementById('metadata-language-select')) {
+        return readMetadataLanguageValue();
+      }
+      return state.settings?.language || state.session?.language || 'zh-CN';
+    }
+
     function loginMethodLabel(session) {
       const method = String(session?.login_method || '').trim();
       if (method === 'webview') return '浏览器辅助登录';
@@ -3490,11 +3624,12 @@ docker stop wrapper-latest-10022</pre>
         ? `音质 ${codec}（需 wrapper）`
         : `音质 ${codec}`;
       const hasSession = Boolean(session && session.connected);
+      const metadataLanguage = currentMetadataLanguage();
       const sessionLabel = hasSession
         ? (session.active_subscription ? '账号已连接' : '账号已登录')
         : '账号未连接';
       const sessionDetail = hasSession
-        ? (session.active_subscription ? '已连接 Apple Music，可直接开始下载。' : '已登录，但未检测到有效订阅')
+        ? ((session.active_subscription ? '已连接 Apple Music，可直接开始下载。' : '已登录，但未检测到有效订阅') + ` 当前下载元数据语言：${metadataLanguage}。`)
         : (session?.last_error || '未检测到可用会话。');
       const sessionTone = hasSession ? (session.active_subscription ? 'success' : 'warn') : 'default';
 
@@ -3572,7 +3707,7 @@ docker stop wrapper-latest-10022</pre>
         ['登录方式', loginMethodLabel(session)],
         ['浏览器来源', session.browser || (state.runtime?.native_login_supported ? '浏览器辅助登录' : '浏览器导入')],
         ['Storefront', String(session.storefront || 'unknown').toUpperCase()],
-        ['语言', session.language || 'zh-CN'],
+        ['下载元数据语言', currentMetadataLanguage()],
         ['订阅状态', session.active_subscription ? '有效' : '无效'],
       ];
       if (session.account_restrictions) {
@@ -3635,7 +3770,7 @@ docker stop wrapper-latest-10022</pre>
       }
 
       list.innerHTML = jobs.map((job) => {
-        const [statusLabel, statusClass] = badgeForStatus(job.status);
+        const [statusLabel, statusClass] = badgeForStatus(job);
         const result = job.result || {};
         const isConvert = job.kind === 'convert';
         const latestMediaPath = result.latest_media_path || '';
@@ -3654,8 +3789,9 @@ docker stop wrapper-latest-10022</pre>
         const fileActionHint = latestMediaPath
           ? `<div class="muted">最近成功文件：${escapeHtml(latestMediaPath)}</div>`
           : `<div class="muted">当前${isConvert ? '转换' : '下载'}任务没有成功输出的媒体文件。</div>`;
-        const actions = job.status === 'queued'
-          ? `<button class="btn" onclick="cancelJob('${job.id}')">取消</button>`
+        const canCancel = job.status === 'queued' || job.status === 'running';
+        const actions = canCancel
+          ? `<button class="btn" onclick="cancelJob('${job.id}')" ${job.cancel_requested ? 'disabled' : ''}>${job.cancel_requested ? '取消中，当前文件完成后停止' : '取消'}</button>`
           : '';
         const primaryMeta = isConvert
           ? `
@@ -3737,7 +3873,7 @@ docker stop wrapper-latest-10022</pre>
         .slice(0, 3);
 
       container.innerHTML = latestJobs.map((job) => {
-        const [statusLabel, statusClass] = badgeForStatus(job.status);
+        const [statusLabel, statusClass] = badgeForStatus(job);
         const isConvert = job.kind === 'convert';
         const title = isConvert
           ? (job.payload.input_mode === 'directory' ? '目录转换' : '文件转换')
@@ -3943,6 +4079,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('log-level').value = settings.log_level || 'INFO';
       document.getElementById('save-cover').value = String(settings.save_cover);
       document.getElementById('song-codec').value = settings.song_codec || 'aac-legacy';
+      setMetadataLanguageValue(settings.language || 'zh-CN');
       document.getElementById('theme-select').value = settings.theme || 'warm';
       document.getElementById('overwrite').value = String(settings.overwrite);
       document.getElementById('network-mode').value = settings.network_mode || 'auto';
@@ -4070,8 +4207,8 @@ docker stop wrapper-latest-10022</pre>
 
     async function cancelJob(jobId) {
       await api(`/api/jobs/${jobId}/cancel`, { method: 'POST', body: '{}' });
-      showToast('已取消排队中的任务');
-      refreshJobs();
+      showToast('已发送取消请求，当前文件完成后停止');
+      await refreshJobs();
     }
     window.cancelJob = cancelJob;
 
@@ -4270,6 +4407,7 @@ docker stop wrapper-latest-10022</pre>
         log_level: document.getElementById('log-level').value,
         save_cover: document.getElementById('save-cover').value === 'true',
         song_codec: document.getElementById('song-codec').value,
+        language: readMetadataLanguageValue(),
         artist_auto_select: document.getElementById('artist-auto-select').value,
         theme: document.getElementById('theme-select').value,
         overwrite: document.getElementById('overwrite').value === 'true',
@@ -4396,9 +4534,10 @@ docker stop wrapper-latest-10022</pre>
 
     async function loginWithWebview() {
       const browser = document.getElementById('browser-select').value;
+      const language = readMetadataLanguageValue();
       const data = await api('/api/auth/login-webview', {
         method: 'POST',
-        body: JSON.stringify({ browser }),
+        body: JSON.stringify({ browser, language }),
       });
       renderSession(data.session);
       showToast(`已通过 ${browser} 完成浏览器辅助登录`);
@@ -4409,9 +4548,10 @@ docker stop wrapper-latest-10022</pre>
         throw new Error('当前已关闭浏览器导入功能。请先在设置中重新开启。');
       }
       const browser = document.getElementById('browser-select').value;
+      const language = readMetadataLanguageValue();
       const data = await api('/api/auth/import-browser', {
         method: 'POST',
-        body: JSON.stringify({ browser }),
+        body: JSON.stringify({ browser, language }),
       });
       renderSession(data.session);
       showToast(`已从 ${browser} 导入登录状态`);
@@ -4419,9 +4559,10 @@ docker stop wrapper-latest-10022</pre>
 
     async function setupLoginWithWebview() {
       const browser = document.getElementById('setup-browser-select').value;
+      const language = readMetadataLanguageValue();
       const data = await api('/api/auth/login-webview', {
         method: 'POST',
-        body: JSON.stringify({ browser }),
+        body: JSON.stringify({ browser, language }),
       });
       renderSession(data.session);
       document.getElementById('browser-select').value = browser;
@@ -4433,9 +4574,10 @@ docker stop wrapper-latest-10022</pre>
         throw new Error('当前已关闭浏览器导入功能。请先在设置中重新开启。');
       }
       const browser = document.getElementById('setup-browser-select').value;
+      const language = readMetadataLanguageValue();
       const data = await api('/api/auth/import-browser', {
         method: 'POST',
-        body: JSON.stringify({ browser }),
+        body: JSON.stringify({ browser, language }),
       });
       renderSession(data.session);
       document.getElementById('browser-select').value = browser;
@@ -4488,6 +4630,7 @@ docker stop wrapper-latest-10022</pre>
       document.getElementById('refresh-jobs-btn').addEventListener('click', () => runAction(refreshJobs));
       document.getElementById('save-settings-btn').addEventListener('click', () => runAction(saveSettings));
       document.getElementById('start-wrapper-btn').addEventListener('click', () => runAction(startWrapper));
+      document.getElementById('metadata-language-select').addEventListener('change', syncMetadataLanguageControls);
       document.getElementById('select-output-btn').addEventListener('click', () => runAction(() => chooseOutputFolder('output-path', '下载目录已更新')));
       document.getElementById('select-convert-output-btn').addEventListener('click', () => runAction(() => chooseOutputFolder('convert-output-path', '转换输出目录已更新')));
       document.getElementById('select-convert-file-btn').addEventListener('click', () => runAction(() => chooseExistingPath('/api/desktop/select-file', 'convert-input-path', '已选择输入文件')));

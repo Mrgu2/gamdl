@@ -45,6 +45,39 @@ class AppSettingsOutputPathTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "没有写权限"):
                 self.store.validate_output_path(str(target))
 
+    def test_save_normalizes_metadata_language(self):
+        target = Path(self.tempdir.name) / "downloads"
+        settings = self.store.save(
+            {
+                "output_path": str(target),
+                "language": "ja_jp",
+            }
+        )
+
+        self.assertEqual(settings.language, "ja-JP")
+
+    def test_save_accepts_short_metadata_language(self):
+        target = Path(self.tempdir.name) / "downloads"
+        settings = self.store.save(
+            {
+                "output_path": str(target),
+                "language": "en",
+            }
+        )
+
+        self.assertEqual(settings.language, "en")
+
+    def test_save_rejects_invalid_metadata_language(self):
+        target = Path(self.tempdir.name) / "downloads"
+
+        with self.assertRaisesRegex(ValueError, "元数据语言格式无效"):
+            self.store.save(
+                {
+                    "output_path": str(target),
+                    "language": "zhcn",
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

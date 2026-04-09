@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.1.2
+# Gamdl Desktop Fork 1.1.3
 
-[![Release](https://img.shields.io/badge/release-1.1.2-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.1.3-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.1.2` 的目标很明确：
+`Gamdl Desktop Fork 1.1.3` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单、艺术家下载
@@ -26,9 +26,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.1.2 发布内容
+## 1.1.3 发布内容
 
-正式版 `1.1.2` 这次继续发布 macOS 桌面包：
+正式版 `1.1.3` 这次继续发布 macOS 桌面包：
 
 - `Apple Music Downloader-arm64.dmg`
   - 面向 Apple Silicon Mac
@@ -39,16 +39,15 @@
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖一轮 token 持久化安全收口、Web UI 本地接口进一步加固、CLI/桌面端生命周期稳定性修复，以及 loopback / wrapper 校验的一致化，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖任务取消链路、元数据语言即时生效、Web GUI 表单显隐修复，以及转换流程的一轮稳定性收口，并继续沿用之前 release 的分发方式：
 
-- 桌面版不再把 Apple Music token 回退写入明文 `.token`；如果系统 keyring / Keychain 不可用，会直接拒绝持久化登录态并提示修复本机凭据存储
-- 当 keyring 删除失败时，当前进程会立即清空内存 token 缓存；登出和会话失效清理也会先清掉本地 `session.json`，避免 UI 长时间残留伪“已登录”
-- 本地 Web UI 的敏感 GET / POST 现在统一要求 `X-Gamdl-Request-Token`，并对 HTML / JSON 响应统一附带 `X-Frame-Options`、CSP、`nosniff`、`no-referrer` 与 `no-store`
-- wrapper account API 地址现在显式限制为 `localhost / 127.0.0.1 / ::1`；非法端口和非法 `--wrapper-account-url` 会收敛成可读的用户输入错误
-- CLI 收尾时只会关闭实际支持的 API 对象，`--synced-lyrics-only` 也不再因为未初始化状态直接崩溃
-- 下载服务、CLI 和桌面版在初始化或关闭中途失败时会主动回收 API client、Web server 线程与日志资源，减少回归测试和实际运行中的残余连接
-- Web GUI、macOS 桌面版和 Windows 启动器现在一致支持 `::1` loopback 绑定，并生成真实可打开的本地会话 URL
-- Web GUI 相关测试显式禁用代理、等待后台任务终态并关闭 opener，减少本机代理环境下的资源泄漏和回归串扰
+- Web GUI 任务页现在支持取消排队中和运行中的任务；已请求取消的运行中任务会明确显示“取消中，当前文件完成后停止”
+- 下载与转换服务新增协作式取消检查；转换中的 `ffmpeg` 进程会在收到取消请求后主动终止，避免界面已取消但后台继续长时间运行
+- 任务 API 现在会回传 `cancel_requested` 状态，前端取消按钮和状态徽标会同步反映当前取消进度，并避免重复点击
+- 元数据语言的前端展示、下载提交和登录 / 浏览器导入请求现在统一读取当前表单值；即使尚未点“保存设置”，本次操作也会按当前选择即时生效
+- Web GUI 设置页恢复正确的 `hidden` 显隐语义；“自定义语言代码”“代理地址”等应隐藏字段不会再被全局样式错误显示出来
+- 修复无封面 `m4a/mp4` 在转换时误走 ID3 封面读取分支导致立即失败的问题；现在这类文件也能正常进入转换与取消流程
+- 补充 Web GUI、设置与转换取消相关回归测试，覆盖排队取消、运行中取消、语言归一化与 `ffmpeg` 终止路径
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -110,7 +109,7 @@ macOS 包说明：
 
 ### Windows
 
-当前 `1.1.2` release 不附带 Windows 安装包。
+当前 `1.1.3` release 不附带 Windows 安装包。
 
 Windows 包说明：
 

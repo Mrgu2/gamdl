@@ -3,6 +3,7 @@ import asyncio
 import http.client
 import os
 import platform
+import queue
 import re
 import socket
 import tempfile
@@ -17,8 +18,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gamdl.api.exceptions import ApiError
-from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, SessionStatus, resolve_executable
+from gamdl.app import AppPaths, AppSettingsStore, DownloadJob, DownloadService, JobCancelledError, SessionStatus, resolve_executable
 from gamdl.app.auth import TokenDeletionError
+from gamdl.app.conversion import ConversionFormat, ConversionResult, ConversionService
+from gamdl.app.downloads import DownloadResult
 from gamdl.downloader import GamdlError
 from gamdl.interface.types import PlaylistTags
 from gamdl.web_gui import (
@@ -109,6 +112,19 @@ class WebGuiSecurityTests(unittest.TestCase):
 
     def test_index_html_escapes_session_values_before_innerhtml_render(self):
         self.assertIn("<div class=\"list-head\"><strong>${escapeHtml(label)}</strong><span class=\"muted\">${escapeHtml(value)}</span></div>", INDEX_HTML)
+        self.assertIn("if (cancelRequested && status === 'running')", INDEX_HTML)
+        self.assertIn("job.cancel_requested ? '取消中，当前文件完成后停止' : '取消'", INDEX_HTML)
+        self.assertIn("return ['取消中，当前文件完成后停止', 'badge warn'];", INDEX_HTML)
+        self.assertIn("function currentMetadataLanguage()", INDEX_HTML)
+
+    def test_index_html_preserves_custom_metadata_language_input_when_toggling_presets(self):
+        start = INDEX_HTML.index("function syncMetadataLanguageControls()")
+        end = INDEX_HTML.index("function setMetadataLanguageValue(", start)
+        sync_fn = INDEX_HTML[start:end]
+        self.assertNotIn("customInput.value = '';", sync_fn)
+
+    def test_index_html_forces_hidden_attribute_to_hide_elements(self):
+        self.assertIn("[hidden] { display: none !important; }", INDEX_HTML)
 
 
 class FakeDownloadResult:
@@ -437,6 +453,7 @@ class WebGuiHelpersTests(unittest.TestCase):
                 "output_path": "/tmp/downloads",
                 "overwrite": False,
                 "save_playlist": True,
+                "language": "ja-JP",
                 "song_codec": "alac",
                 "artist_auto_select": "top-songs",
                 "use_wrapper": True,
@@ -446,6 +463,7 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertEqual(command[0], "internal-download")
         self.assertIn("output_path=/tmp/downloads", command)
         self.assertIn("save_playlist=True", command)
+        self.assertIn("language=ja-JP", command)
         self.assertIn("song_codec=alac", command)
         self.assertIn("artist_auto_select=top-songs", command)
         self.assertIn("use_wrapper=True", command)
@@ -456,6 +474,7 @@ class WebGuiHelpersTests(unittest.TestCase):
         self.assertIn("browser_import_enabled", GUI_SETTINGS_DEFAULTS)
         self.assertIn("setup_completed", GUI_SETTINGS_DEFAULTS)
         self.assertIn("song_codec", GUI_SETTINGS_DEFAULTS)
+        self.assertIn("language", GUI_SETTINGS_DEFAULTS)
         self.assertIn("theme", GUI_SETTINGS_DEFAULTS)
         self.assertIn("use_wrapper", GUI_SETTINGS_DEFAULTS)
         self.assertIn("wrapper_decrypt_ip", GUI_SETTINGS_DEFAULTS)
@@ -660,6 +679,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertTrue(data["settings"]["save_cover"])
         self.assertFalse(data["settings"]["setup_completed"])
         self.assertEqual(data["settings"]["song_codec"], "aac-legacy")
+        self.assertEqual(data["settings"]["language"], "zh-CN")
         self.assertEqual(data["settings"]["theme"], "warm")
         self.assertFalse(data["settings"]["use_wrapper"])
         self.assertEqual(data["settings"]["wrapper_decrypt_ip"], "127.0.0.1:10022")
@@ -681,12 +701,205 @@ class WebGuiApiTests(unittest.TestCase):
             self.server.file_actions.supported,
         )
 
+    def test_cancel_queued_job_marks_it_cancelled(self):
+        self.server.auth_manager.login_with_webview()
+        with patch.object(self.server.job_manager, "job_queue", queue.Queue()):
+            created = self.server.job_manager.create_job(
+                {
+                    "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
+                    "output_path": str(self.paths.app_support_dir / "downloads"),
+                    "overwrite": False,
+                    "save_cover": True,
+                    "log_level": "INFO",
+                }
+            )
+
+        response = self._post_json(f"/api/jobs/{created.id}/cancel", {})
+        self.assertTrue(response["ok"])
+        job = self._get_json(f"/api/jobs/{created.id}")
+        self.assertEqual(job["status"], "cancelled")
+        self.assertTrue(job["cancel_requested"])
+        self.assertIn("任务已取消（尚未开始执行）。", "\n".join(job["logs"]))
+
+    def test_cancel_running_download_job_stops_with_cancelled_status(self):
+        self.server.auth_manager.login_with_webview()
+
+        def fake_run_sync(service, _job):
+            result = DownloadResult(output_path=str(self.paths.app_support_dir / "downloads"))
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if service.cancel_callback and service.cancel_callback():
+                    result.finished_at = time.time()
+                    raise JobCancelledError(result.to_dict())
+                time.sleep(0.02)
+            self.fail("cancel callback was not triggered")
+
+        with patch("gamdl.web_gui.DownloadService.run_sync", autospec=True, side_effect=fake_run_sync):
+            created = self._post_json(
+                "/api/jobs",
+                {
+                    "url_text": "https://music.apple.com/us/album/test/123456789?i=123456790",
+                    "output_path": str(self.paths.app_support_dir / "downloads"),
+                    "overwrite": False,
+                    "save_cover": True,
+                    "log_level": "INFO",
+                },
+            )
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                running_job = self._get_json(f"/api/jobs/{created['id']}")
+                if running_job["status"] == "running":
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("job did not enter running state")
+
+            response = self._post_json(f"/api/jobs/{created['id']}/cancel", {})
+            self.assertTrue(response["ok"])
+            job = self._wait_for_terminal_job(created["id"], timeout=2.5)
+
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["return_code"], 130)
+        self.assertTrue(job["cancel_requested"])
+        logs = "\n".join(job["logs"])
+        self.assertIn("已收到取消请求，取消中，当前文件完成后停止。", logs)
+        self.assertIn("任务已停止。", logs)
+
+    def test_conversion_service_terminates_ffmpeg_on_cancel(self):
+        service = ConversionService(cancel_callback=lambda: True)
+        result = ConversionResult()
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.killed = False
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                return None
+
+            def communicate(self, timeout=None):
+                return ("", "")
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+        process = FakeProcess()
+        with patch("gamdl.app.conversion.subprocess.Popen", return_value=process):
+            with self.assertRaises(JobCancelledError):
+                service._run_ffmpeg(
+                    Path("/tmp/in.m4a"),
+                    Path("/tmp/out.mp3"),
+                    ConversionFormat.MP3,
+                    44100,
+                    False,
+                    result,
+                )
+
+        self.assertTrue(process.terminated)
+
+    def test_convert_path_reraises_job_cancelled_error(self):
+        service = ConversionService()
+        result = ConversionResult()
+
+        with (
+            patch.object(service, "_read_metadata", return_value=SimpleNamespace(sample_rate=44100)),
+            patch.object(
+                service,
+                "_run_ffmpeg",
+                side_effect=JobCancelledError(result.to_dict()),
+            ),
+            patch.object(service, "_write_metadata"),
+        ):
+            with self.assertRaises(JobCancelledError):
+                service._convert_path(
+                    Path("/tmp/in.m4a"),
+                    Path("/tmp/out.mp3"),
+                    ConversionFormat.MP3,
+                    False,
+                    result,
+                )
+
+        self.assertEqual(result.errors, 0)
+
     def test_login_webview_uses_selected_browser(self):
         data = self._post_json("/api/auth/login-webview", {"browser": "chrome"})
 
         self.assertTrue(data["session"]["connected"])
         self.assertEqual(data["session"]["login_method"], "browser-import")
         self.assertEqual(data["session"]["browser"], "chrome")
+
+    def test_login_webview_uses_configured_metadata_language(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        self.server.settings_store.save(
+            {
+                "output_path": str(remembered_path),
+                "language": "ja-JP",
+            }
+        )
+
+        data = self._post_json("/api/auth/login-webview", {"browser": "chrome"})
+
+        self.assertEqual(data["session"]["language"], "ja-JP")
+
+    def test_login_webview_prefers_request_metadata_language_over_saved_setting(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        self.server.settings_store.save(
+            {
+                "output_path": str(remembered_path),
+                "language": "zh-CN",
+            }
+        )
+
+        data = self._post_json(
+            "/api/auth/login-webview",
+            {"browser": "chrome", "language": "ja_jp"},
+        )
+
+        self.assertEqual(data["session"]["language"], "ja-JP")
+
+    def test_import_browser_uses_configured_metadata_language(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        self.server.settings_store.save(
+            {
+                "output_path": str(remembered_path),
+                "language": "zh-HK",
+            }
+        )
+
+        data = self._post_json("/api/auth/import-browser", {"browser": "chrome"})
+
+        self.assertEqual(data["session"]["language"], "zh-HK")
+
+    def test_import_browser_prefers_request_metadata_language_over_saved_setting(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        self.server.settings_store.save(
+            {
+                "output_path": str(remembered_path),
+                "language": "zh-CN",
+            }
+        )
+
+        data = self._post_json(
+            "/api/auth/import-browser",
+            {"browser": "chrome", "language": "en-us"},
+        )
+
+        self.assertEqual(data["session"]["language"], "en-US")
+
+    def test_login_webview_rejects_invalid_request_metadata_language(self):
+        status, data = self._post_json_error(
+            "/api/auth/login-webview",
+            {"browser": "chrome", "language": "zhcn"},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["category"], "settings")
+        self.assertIn("元数据语言格式无效", data["error"])
 
     def test_post_settings_persists_whitelisted_values(self):
         remembered_path = self.paths.app_support_dir / "remembered"
@@ -698,6 +911,7 @@ class WebGuiApiTests(unittest.TestCase):
                 "browser_import_enabled": False,
                 "setup_completed": True,
                 "song_codec": "aac-legacy",
+                "language": "ja_jp",
                 "theme": "cool",
                 "network_mode": "custom",
                 "proxy_url": "http://127.0.0.1:7890",
@@ -714,6 +928,7 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertFalse(data["settings"]["browser_import_enabled"])
         self.assertTrue(data["settings"]["setup_completed"])
         self.assertEqual(data["settings"]["song_codec"], "aac-legacy")
+        self.assertEqual(data["settings"]["language"], "ja-JP")
         self.assertEqual(data["settings"]["theme"], "cool")
         self.assertEqual(data["settings"]["network_mode"], "custom")
         self.assertEqual(data["settings"]["proxy_url"], "http://127.0.0.1:7890")
@@ -728,6 +943,32 @@ class WebGuiApiTests(unittest.TestCase):
         data = self._post_json("/api/settings/validate", {"output_path": str(target)})
         self.assertEqual(data["output_path"], str(target))
         self.assertTrue(target.exists())
+
+    def test_post_settings_rejects_invalid_metadata_language(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        status, data = self._post_json_error(
+            "/api/settings",
+            {
+                "output_path": str(remembered_path),
+                "language": "zhcn",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("元数据语言格式无效", data["error"])
+        self.assertEqual(data["category"], "settings")
+
+    def test_post_settings_accepts_short_metadata_language(self):
+        remembered_path = self.paths.app_support_dir / "remembered"
+        data = self._post_json(
+            "/api/settings",
+            {
+                "output_path": str(remembered_path),
+                "language": "en",
+            },
+        )
+
+        self.assertEqual(data["settings"]["language"], "en")
 
     def test_post_settings_allows_clearing_open_file_application(self):
         remembered_path = self.paths.app_support_dir / "remembered"
@@ -928,6 +1169,7 @@ class WebGuiApiTests(unittest.TestCase):
                 "browser_import_enabled": False,
                 "last_login_method": "browser-import",
                 "song_codec": "alac",
+                "language": "zh-TW",
                 "use_wrapper": True,
                 "wrapper_decrypt_ip": "127.0.0.1:10022",
             }
@@ -957,6 +1199,7 @@ class WebGuiApiTests(unittest.TestCase):
                 "log_level",
                 "browser_import_enabled",
                 "last_login_method",
+                "language",
                 "song_codec",
                 "use_wrapper",
                 "wrapper_decrypt_ip",
@@ -1780,7 +2023,10 @@ class DownloadServiceTests(unittest.TestCase):
             )()
 
             with (
-                patch("gamdl.app.downloads.AppleMusicApi.create", new=AsyncMock(return_value=fake_api)),
+                patch(
+                    "gamdl.app.downloads.AppleMusicApi.create",
+                    new=AsyncMock(return_value=fake_api),
+                ) as create_api,
                 patch("gamdl.app.downloads.ItunesApi"),
                 patch("gamdl.app.downloads.AppleMusicInterface"),
                 patch("gamdl.app.downloads.AppleMusicSongInterface"),
@@ -1801,7 +2047,49 @@ class DownloadServiceTests(unittest.TestCase):
                 base_downloader_cls.call_args.kwargs["temp_path"],
                 str(paths.temp_dir),
             )
+            self.assertEqual(create_api.await_args.kwargs["language"], "zh-CN")
             self.assertTrue(paths.temp_dir.exists())
+        finally:
+            tempdir.cleanup()
+
+    def test_create_downloader_passes_configured_metadata_language(self):
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            paths = AppPaths(base_dir=Path(tempdir.name), app_name="GamdlTest")
+            service = DownloadService(media_user_token="test-token", paths=paths)
+            fake_api = type(
+                "FakeApi",
+                (),
+                {
+                    "active_subscription": True,
+                    "storefront": "jp",
+                    "language": "ja-JP",
+                },
+            )()
+
+            with (
+                patch(
+                    "gamdl.app.downloads.AppleMusicApi.create",
+                    new=AsyncMock(return_value=fake_api),
+                ) as create_api,
+                patch("gamdl.app.downloads.ItunesApi"),
+                patch("gamdl.app.downloads.AppleMusicInterface"),
+                patch("gamdl.app.downloads.AppleMusicSongInterface"),
+                patch("gamdl.app.downloads.AppleMusicSongDownloader"),
+                patch("gamdl.app.downloads.AppleMusicDownloader"),
+                patch("gamdl.app.downloads.AppleMusicBaseDownloader"),
+            ):
+                asyncio.run(
+                    service._create_downloader(
+                        DownloadJob(
+                            urls=["https://music.apple.com/jp/album/test/1?i=2"],
+                            output_path="/tmp/downloads",
+                            language="ja-JP",
+                        )
+                    )
+                )
+
+            self.assertEqual(create_api.await_args.kwargs["language"], "ja-JP")
         finally:
             tempdir.cleanup()
 

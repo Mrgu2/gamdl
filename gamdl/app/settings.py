@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from ipaddress import ip_address
 from pathlib import Path
@@ -35,6 +36,7 @@ STRING_KEYS = {
     "network_mode",
     "output_path",
     "log_level",
+    "language",
     "last_login_method",
     "open_file_application",
     "proxy_url",
@@ -49,6 +51,27 @@ WRAPPER_DECRYPT_IP_ERROR = (
     "Wrapper 解密地址格式无效，请使用类似 127.0.0.1:10022 的地址，或填写 1 到 55535 之间的端口号。"
 )
 WRAPPER_LOCALHOST_ONLY_ERROR = "桌面版 wrapper 地址必须是本机回环地址，例如 127.0.0.1:10022。"
+METADATA_LANGUAGE_ERROR = (
+    "元数据语言格式无效，请使用 zh-CN、ja-JP、zh-TW 这类语言代码，也支持 ja、en 这类简写。"
+)
+METADATA_LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+
+
+def normalize_metadata_language(language: str) -> str:
+    normalized = str(language or "").strip().replace("_", "-")
+    if not normalized or not METADATA_LANGUAGE_RE.fullmatch(normalized):
+        raise ValueError(METADATA_LANGUAGE_ERROR)
+
+    parts = normalized.split("-")
+    formatted = [parts[0].lower()]
+    for part in parts[1:]:
+        if len(part) == 4 and part.isalpha():
+            formatted.append(part.title())
+        elif len(part) in {2, 3} and part.isalpha():
+            formatted.append(part.upper())
+        else:
+            formatted.append(part)
+    return "-".join(formatted)
 
 
 @dataclass
@@ -57,6 +80,7 @@ class AppSettings:
     overwrite: bool = False
     save_cover: bool = True
     log_level: str = "INFO"
+    language: str = "zh-CN"
     last_login_method: str | None = None
     open_file_application: str = ""
     browser_import_enabled: bool = True
@@ -121,6 +145,11 @@ class AppSettingsStore:
             sanitized.pop("song_codec")
         if "theme" in sanitized and sanitized["theme"] not in ALLOWED_THEMES:
             sanitized.pop("theme")
+        if "language" in sanitized:
+            try:
+                sanitized["language"] = normalize_metadata_language(sanitized["language"])
+            except ValueError:
+                sanitized.pop("language")
         if "network_mode" in sanitized and sanitized["network_mode"] not in ALLOWED_NETWORK_MODES:
             sanitized.pop("network_mode")
         if "wrapper_decrypt_ip" in sanitized:
@@ -208,6 +237,12 @@ class AppSettingsStore:
                     if message == WRAPPER_LOCALHOST_ONLY_ERROR:
                         raise ValueError(message) from exc
                     raise ValueError(WRAPPER_DECRYPT_IP_ERROR) from exc
+
+        if isinstance(payload.get("language"), str):
+            payload = {
+                **payload,
+                "language": normalize_metadata_language(payload["language"]),
+            }
 
         settings = asdict(self.load())
         settings.update(self._sanitize(payload))

@@ -1,4 +1,5 @@
 from .auth import AuthManager, BrowserType, LoginMethod, SessionStatus
+from .cancellation import JobCancelledError
 from .conversion import ConversionFormat, ConversionJobSpec, ConversionResult, ConversionService
 from .diagnostics import DiagnosticsService
 from .executables import ExecutableResolution, resolve_executable
@@ -26,6 +27,7 @@ __all__ = [
     "DownloadResult",
     "DownloadService",
     "ExecutableResolution",
+    "JobCancelledError",
     "LoginMethod",
     "NetworkConfig",
     "SessionStatus",

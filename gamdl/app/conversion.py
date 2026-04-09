@@ -19,6 +19,7 @@ from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 from PIL import Image
 
+from .cancellation import JobCancelledError
 from .executables import resolve_executable
 
 logger = logging.getLogger("gamdl.app.conversion")
@@ -106,16 +107,25 @@ class ConversionService:
         self,
         ffmpeg_path: str = "ffmpeg",
         log_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> None:
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_resolution = resolve_executable("ffmpeg", ffmpeg_path)
         self.full_ffmpeg_path = self.ffmpeg_resolution.path
         self.log_callback = log_callback
+        self.cancel_callback = cancel_callback
 
     def _emit(self, message: str) -> None:
         logger.info(message)
         if self.log_callback:
             self.log_callback(message)
+
+    def _check_cancel(self, result: ConversionResult) -> None:
+        if not self.cancel_callback or not self.cancel_callback():
+            return
+        result.finished_at = time.time()
+        self._emit("任务取消请求已收到，正在停止转换。")
+        raise JobCancelledError(result.to_dict())
 
     def run(self, job: ConversionJobSpec) -> ConversionResult:
         if not self.full_ffmpeg_path:
@@ -134,6 +144,7 @@ class ConversionService:
 
         result = ConversionResult()
         target_format = ConversionFormat(job.target_format)
+        self._check_cancel(result)
 
         if job.input_mode == "file":
             self._process_file_mode(input_root, output_root, target_format, bool(job.overwrite), result)
@@ -157,6 +168,7 @@ class ConversionService:
         overwrite: bool,
         result: ConversionResult,
     ) -> None:
+        self._check_cancel(result)
         result.total_files = 1
         if source_path.suffix.lower() not in AUDIO_EXTENSIONS:
             result.errors = 1
@@ -180,6 +192,7 @@ class ConversionService:
             raise ValueError("输入目录中没有可处理的文件。")
 
         for source_path in discovered_files:
+            self._check_cancel(result)
             result.total_files += 1
             relative_path = source_path.relative_to(input_root)
             if source_path.suffix.lower() not in AUDIO_EXTENSIONS:
@@ -197,6 +210,7 @@ class ConversionService:
         overwrite: bool,
         result: ConversionResult,
     ) -> None:
+        self._check_cancel(result)
         if destination.exists() and not overwrite:
             result.skipped_files += 1
             self._emit(f"[Skip] 目标文件已存在: {destination}")
@@ -205,12 +219,14 @@ class ConversionService:
         try:
             metadata = self._read_metadata(source_path)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            self._run_ffmpeg(source_path, destination, target_format, metadata.sample_rate, overwrite)
+            self._run_ffmpeg(source_path, destination, target_format, metadata.sample_rate, overwrite, result)
             self._write_metadata(destination, target_format, metadata)
             result.converted_files += 1
             result.latest_media_path = str(destination.resolve())
             result.latest_media_dir = str(destination.resolve().parent)
             self._emit(f"[OK] {source_path.name} -> {destination}")
+        except JobCancelledError:
+            raise
         except Exception as exc:
             result.errors += 1
             self._emit(f"[Error] {source_path}: {exc}")
@@ -224,6 +240,7 @@ class ConversionService:
         target_format: ConversionFormat,
         sample_rate: int,
         overwrite: bool,
+        result: ConversionResult,
     ) -> None:
         command = [
             self.full_ffmpeg_path,
@@ -258,10 +275,31 @@ class ConversionService:
                 ]
             )
         command.append(str(destination))
-        process = subprocess.run(command, capture_output=True, text=True, check=False)
-        if process.returncode != 0:
-            stderr = (process.stderr or "").strip()
-            raise RuntimeError(stderr or "ffmpeg 转换失败。")
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                stdout, stderr = process.communicate()
+                process_stdout = stdout or ""
+                process_stderr = stderr or ""
+                if return_code != 0:
+                    stderr = process_stderr.strip()
+                    raise RuntimeError(stderr or "ffmpeg 转换失败。")
+                break
+            if self.cancel_callback and self.cancel_callback():
+                process.terminate()
+                try:
+                    process.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                self._check_cancel(result)
+            time.sleep(0.1)
 
     def _read_metadata(self, source_path: Path) -> NormalizedTags:
         audio = File(source_path)
@@ -471,6 +509,7 @@ class ConversionService:
                 if getattr(cover, "imageformat", None) == MP4Cover.FORMAT_PNG:
                     mime = "image/png"
                 return self._build_picture(bytes(cover), mime)
+            return None
 
         if isinstance(audio, FLAC):
             if audio.pictures:
@@ -496,7 +535,7 @@ class ConversionService:
                     depth=picture.depth or None,
                 )
 
-        if getattr(audio, "tags", None):
+        if getattr(audio, "tags", None) and hasattr(audio.tags, "getall"):
             frame = next(iter(audio.tags.getall("APIC")), None)
             if frame:
                 return self._build_picture(frame.data, frame.mime or self._guess_mime(frame.data))

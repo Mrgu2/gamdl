@@ -20,7 +20,13 @@ class ConversionServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = ConversionService()
 
-    def _create_sample_m4a(self, root: Path, sample_rate: int = 44100) -> Path:
+    def _create_sample_m4a(
+        self,
+        root: Path,
+        sample_rate: int = 44100,
+        *,
+        include_cover: bool = True,
+    ) -> Path:
         source = root / "sample.m4a"
         cover = root / "cover.jpg"
         subprocess.run(
@@ -42,27 +48,28 @@ class ConversionServiceTests(unittest.TestCase):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        subprocess.run(
-            [
-                FFMPEG_COMMAND,
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=red:s=32x32:d=0.1",
-                "-frames:v",
-                "1",
-                str(cover),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
         audio = MP4(source)
         audio["\xa9nam"] = ["Song"]
         audio["\xa9ART"] = ["Artist"]
         audio["trkn"] = [(12, 13)]
         audio["disk"] = [(1, 1)]
-        audio["covr"] = [MP4Cover(cover.read_bytes(), imageformat=MP4Cover.FORMAT_JPEG)]
+        if include_cover:
+            subprocess.run(
+                [
+                    FFMPEG_COMMAND,
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=red:s=32x32:d=0.1",
+                    "-frames:v",
+                    "1",
+                    str(cover),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            audio["covr"] = [MP4Cover(cover.read_bytes(), imageformat=MP4Cover.FORMAT_JPEG)]
         audio.save()
         return source
 
@@ -149,6 +156,31 @@ class ConversionServiceTests(unittest.TestCase):
                 "软件纯免费开源，无病毒，无额外广告，请确保你是从 GitHub @Mrgu2 下载的该软件。",
             )
             self.assertTrue(tags.getall("APIC"))
+
+    def test_mp3_conversion_succeeds_without_mp4_cover_art(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            source = self._create_sample_m4a(root, include_cover=False)
+            output = root / "output"
+            output.mkdir()
+
+            result = self.service.run(
+                ConversionJobSpec(
+                    input_mode="file",
+                    input_path=str(source),
+                    output_path=str(output),
+                    target_format="mp3",
+                )
+            )
+
+            target = output / "sample.mp3"
+            self.assertEqual(result.converted_files, 1)
+            self.assertEqual(result.errors, 0)
+            self.assertTrue(target.exists())
+            tags = ID3(target)
+            self.assertEqual(str(tags["TIT2"]), "Song")
+            self.assertEqual(str(tags["TPE1"]), "Artist")
+            self.assertFalse(tags.getall("APIC"))
 
     def test_directory_mode_preserves_relative_structure_and_skips_non_audio(self):
         with tempfile.TemporaryDirectory() as tempdir:

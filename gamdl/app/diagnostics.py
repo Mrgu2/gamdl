@@ -15,6 +15,7 @@ from .settings import AppSettingsStore
 REDACTED = "***"
 DIAGNOSTIC_SETTINGS_KEYS = (
     "log_level",
+    "language",
     "browser_import_enabled",
     "last_login_method",
     "song_codec",
