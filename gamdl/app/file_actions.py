@@ -6,6 +6,9 @@ import platform
 import subprocess
 from typing import Any
 
+MAC_OPEN_BIN = "/usr/bin/open"
+MAC_OSASCRIPT_BIN = "/usr/bin/osascript"
+
 
 class DesktopFileActions:
     def __init__(self, current_platform: str | None = None) -> None:
@@ -71,13 +74,16 @@ class DesktopFileActions:
         try:
             if self.platform == "Darwin":
                 if application:
-                    subprocess.run(["open", "-a", application, str(path)], check=True)
+                    subprocess.run([MAC_OPEN_BIN, "-a", application, str(path)], check=True)
                 else:
-                    subprocess.run(["open", str(path)], check=True)
+                    subprocess.run([MAC_OPEN_BIN, str(path)], check=True)
                 return
             if self.platform == "Windows":
                 if application:
-                    subprocess.run([application, str(path)], check=True)
+                    subprocess.run(
+                        [self._validate_windows_application(application), str(path)],
+                        check=True,
+                    )
                 else:
                     startfile = getattr(os, "startfile", None)
                     if startfile is None:
@@ -91,7 +97,7 @@ class DesktopFileActions:
     def _reveal_path(self, path: Path) -> None:
         try:
             if self.platform == "Darwin":
-                subprocess.run(["open", "-R", str(path)], check=True)
+                subprocess.run([MAC_OPEN_BIN, "-R", str(path)], check=True)
                 return
             if self.platform == "Windows":
                 subprocess.run(["explorer", f"/select,{path}"], check=True)
@@ -161,17 +167,31 @@ class DesktopFileActions:
             }
         ]
         configured_application = (configured_application or "").strip()
-        if configured_application:
+        if configured_application and self._windows_application_option(configured_application):
             options.append({"kind": "separator"})
+            application_path = self._windows_application_option(configured_application)
             options.append(
                 {
-                    "label": f"自定义应用 ({configured_application})",
+                    "label": f"自定义应用 ({application_path})",
                     "kind": "application",
                     "is_default": False,
-                    "application_path": configured_application,
+                    "application_path": application_path,
                 }
             )
         return options
+
+    @staticmethod
+    def _windows_application_option(application: str) -> str | None:
+        candidate = Path(application).expanduser()
+        if not candidate.is_absolute() or not candidate.is_file():
+            return None
+        return str(candidate.resolve())
+
+    def _validate_windows_application(self, application: str) -> str:
+        application_path = self._windows_application_option(application)
+        if not application_path:
+            raise RuntimeError("Windows 自定义打开应用必须是有效的绝对文件路径。")
+        return application_path
 
     def _mac_lookup_applications(
         self,
@@ -218,7 +238,7 @@ class DesktopFileActions:
         try:
             result = subprocess.run(
                 [
-                    "osascript",
+                    MAC_OSASCRIPT_BIN,
                     "-e",
                     "POSIX path of (choose application)",
                 ],

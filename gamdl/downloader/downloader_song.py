@@ -53,7 +53,17 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             self.synced_lyrics_format,
         )
 
-        webplayback = await self.interface.apple_music_api.get_webplayback(song_id)
+        is_library = (
+            song_metadata.get("type") == "library-songs"
+            or song_metadata.get("attributes", {})
+            .get("playParams", {})
+            .get("isLibrary", False)
+        )
+        webplayback_id = song_metadata["id"] if is_library else song_id
+        webplayback = await self.interface.apple_music_api.get_webplayback(
+            webplayback_id,
+            is_library=is_library,
+        )
         download_item.media_tags = await self.interface.get_tags(
             webplayback,
             download_item.lyrics.unsynced if download_item.lyrics else None,
@@ -97,6 +107,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
                 codec,
                 song_metadata,
                 webplayback,
+                is_library=is_library,
             )
             if download_item.stream_info:
                 if self.use_wrapper and not download_item.stream_info.audio_track.legacy:
@@ -122,6 +133,8 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
                     self.cdm,
                 )
             )
+        elif download_item.stream_info.audio_track.drm_free:
+            download_item.decryption_key = None
         elif (
             not self.use_wrapper
             and download_item.stream_info
@@ -178,6 +191,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         output_path: str,
         media_id: str,
         fairplay_key: str,
+        use_single_content_key: bool = False,
     ) -> None:
         await decrypt_file(
             self.wrapper_decrypt_ip,
@@ -185,6 +199,8 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             fairplay_key,
             input_path,
             output_path,
+            use_single_content_key=use_single_content_key,
+            file_backed_samples=True,
         )
 
     async def decrypt_amdecrypt_hex(
@@ -193,12 +209,17 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         output_path: str,
         decryption_key: str,
         legacy: bool = False,
+        use_cenc: bool = False,
+        use_single_content_key: bool = False,
     ) -> None:
         await decrypt_file_hex(
             input_path,
             output_path,
             decryption_key,
             legacy=legacy,
+            use_cenc=use_cenc,
+            use_single_content_key=use_single_content_key,
+            file_backed_samples=True,
         )
 
     async def stage(
@@ -209,6 +230,8 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         legacy: bool,
         media_id: str,
         fairplay_key: str,
+        use_cenc: bool = False,
+        use_single_content_key: bool = False,
     ):
         if self.use_wrapper and not legacy:
             await self.decrypt_amdecrypt(
@@ -216,6 +239,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
                 staged_path,
                 media_id,
                 fairplay_key,
+                use_single_content_key=use_single_content_key,
             )
         else:
             await self.decrypt_amdecrypt_hex(
@@ -223,6 +247,8 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
                 staged_path,
                 decryption_key.audio_track.key,
                 legacy,
+                use_cenc=use_cenc,
+                use_single_content_key=use_single_content_key,
             )
 
     def get_lyrics_synced_path(self, final_path: str) -> str:
@@ -253,25 +279,37 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         if self.synced_lyrics_only:
             return
 
-        encrypted_path = self.get_temp_path(
-            download_item.media_metadata["id"],
-            download_item.random_uuid,
-            "encrypted",
-            ".m4a",
-        )
-        await self.download_stream(
-            download_item.stream_info.audio_track.stream_url,
-            encrypted_path,
-        )
+        if download_item.stream_info.audio_track.drm_free:
+            await self.download_stream(
+                download_item.stream_info.audio_track.stream_url,
+                download_item.staged_path,
+            )
+        else:
+            encrypted_path = self.get_temp_path(
+                download_item.media_metadata["id"],
+                download_item.random_uuid,
+                "encrypted",
+                ".m4a",
+            )
+            await self.download_stream(
+                download_item.stream_info.audio_track.stream_url,
+                encrypted_path,
+            )
 
-        await self.stage(
-            encrypted_path,
-            download_item.staged_path,
-            download_item.decryption_key,
-            download_item.stream_info.audio_track.legacy,
-            download_item.media_metadata["id"],
-            download_item.stream_info.audio_track.fairplay_key,
-        )
+            await self.stage(
+                encrypted_path,
+                download_item.staged_path,
+                download_item.decryption_key,
+                download_item.stream_info.audio_track.legacy,
+                download_item.media_metadata["id"],
+                download_item.stream_info.audio_track.fairplay_key,
+                getattr(download_item.stream_info.audio_track, "use_cenc", False),
+                getattr(
+                    download_item.stream_info.audio_track,
+                    "use_single_content_key",
+                    False,
+                ),
+            )
 
         cover_bytes = (
             await self.interface.get_cover_bytes(download_item.cover_url)

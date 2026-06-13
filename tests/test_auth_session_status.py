@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +17,10 @@ from gamdl.app.auth import (
     TokenPersistenceError,
 )
 from gamdl.app.paths import AppPaths
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 class AuthSessionStatusTests(unittest.TestCase):
@@ -81,6 +87,12 @@ class AuthSessionStatusTests(unittest.TestCase):
 
         self.assertTrue(status.connected)
         self.assertEqual(status.login_method, LoginMethod.WEBVIEW.value)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions are not stable on Windows")
+    def test_save_session_uses_private_file_permissions(self):
+        self.manager._save_session({"connected": True, "storefront": "us"})
+
+        self.assertEqual(_mode(self.paths.session_path) & 0o077, 0)
 
     def test_login_with_webview_uses_browser_assisted_flow(self):
         with (

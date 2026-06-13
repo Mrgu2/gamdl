@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def restrict_permissions(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except OSError:
+        return
+
+
 def _downloads_dir() -> Path:
     downloads = Path.home() / "Downloads"
     return downloads if downloads.exists() else Path.home()
@@ -57,3 +64,4 @@ class AppPaths:
             self.temp_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+            restrict_permissions(path, 0o700)

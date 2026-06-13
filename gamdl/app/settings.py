@@ -16,7 +16,7 @@ from ..network import (
     SOCKS_PROXY_SUPPORT_ERROR,
     normalize_network_config,
 )
-from .paths import AppPaths
+from .paths import AppPaths, restrict_permissions
 from .wrapper_manager import (
     default_wrapper_decrypt_ip,
     normalize_wrapper_decrypt_ip,
@@ -252,4 +252,5 @@ class AppSettingsStore:
             json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        restrict_permissions(self.path, 0o600)
         return AppSettings(**settings)

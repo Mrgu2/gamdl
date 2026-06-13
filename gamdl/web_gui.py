@@ -56,6 +56,7 @@ from .downloader.constants import VALID_URL_PATTERN
 logger = logging.getLogger("gamdl.app.web")
 
 MAX_LOG_LINES = 4000
+MAX_JSON_BODY_BYTES = 1024 * 1024
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 API_REQUEST_TOKEN_HEADER = "X-Gamdl-Request-Token"
@@ -75,6 +76,8 @@ SUPPORTED_DOWNLOAD_KINDS = {
 SUPPORTED_CONVERSION_FORMATS = {"flac", "mp3"}
 DEFAULT_WRAPPER_DECRYPT_IP = "127.0.0.1:10022"
 LOCAL_SESSION_TOKEN_ERROR = "需要有效本地会话令牌，请刷新页面重试。"
+REQUEST_BODY_TOO_LARGE_ERROR = "请求体过大。"
+INVALID_OPEN_APPLICATION_ERROR = "打开方式无效，请重新从菜单选择。"
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     "img-src 'self' data:; "
@@ -553,6 +556,10 @@ class JobManager:
             job.error_message = "转换任务包含失败项，请查看日志。"
 
 
+class RequestBodyTooLargeError(ValueError):
+    pass
+
+
 class WebGuiHandler(BaseHTTPRequestHandler):
     server_version = "gamdl-web/1.0"
 
@@ -653,6 +660,9 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._read_json()
+        except RequestBodyTooLargeError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
         except ValueError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -912,9 +922,14 @@ class WebGuiHandler(BaseHTTPRequestHandler):
         return
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("请求体长度无效。") from exc
         if not length:
             return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise RequestBodyTooLargeError(REQUEST_BODY_TOO_LARGE_ERROR)
         body = self.rfile.read(length)
         try:
             return json.loads(body.decode("utf-8"))
@@ -1098,6 +1113,8 @@ class WebGuiHandler(BaseHTTPRequestHandler):
                         if application is None:
                             self._send_json({"cancelled": True})
                             return
+                    elif application:
+                        application = self._validate_open_application(latest_media_path, application)
                     self.server.file_actions.open_file(latest_media_path, application=application)
                 else:
                     self.server.file_actions.reveal_file(latest_media_path)
@@ -1106,6 +1123,21 @@ class WebGuiHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"ok": True})
+
+    def _validate_open_application(self, latest_media_path: str, application: str) -> str:
+        settings = self.server.settings_store.load()
+        options = self.server.file_actions.get_open_with_options(
+            latest_media_path,
+            configured_application=settings.open_file_application,
+        )
+        allowed_applications = {
+            str(option.get("application_path") or "").strip()
+            for option in options
+            if option.get("kind") == "application"
+        }
+        if application not in allowed_applications:
+            raise RuntimeError(INVALID_OPEN_APPLICATION_ERROR)
+        return application
 
     def _handle_job_open_with_options(self, path: str) -> None:
         job_id = path.split("/")[-2]

@@ -6,12 +6,14 @@ All the modifications made here were AI generated
 import asyncio
 import io
 import logging
+import os
 import struct
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import BinaryIO, List, Optional
 
-from Crypto.Cipher import AES
+from Cryptodome.Cipher import AES
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,9 @@ class SampleInfo:
     subsamples: List[tuple] = field(
         default_factory=list
     )  # [(clear_bytes, encrypted_bytes), ...]
+    size: int = 0
+    data_path: str | None = None
+    data_offset: int = 0
 
 
 @dataclass
@@ -56,6 +61,39 @@ class SongInfo:
     moov_data: bytes = b""
     ftyp_data: bytes = b""
     encryption_info: Optional[EncryptionInfo] = None
+
+
+def _sample_size(sample: SampleInfo) -> int:
+    return sample.size or len(sample.data)
+
+
+def _sample_data(sample: SampleInfo) -> bytes:
+    if sample.data:
+        return sample.data
+    if sample.data_path and sample.size:
+        with open(sample.data_path, "rb") as f:
+            f.seek(sample.data_offset)
+            data = f.read(sample.size)
+        if len(data) != sample.size:
+            raise IOError(
+                f"unexpected EOF while reading sample at {sample.data_offset} "
+                f"from {sample.data_path}"
+            )
+        return data
+    return sample.data
+
+
+def _with_sample_data(sample: SampleInfo, data: bytes) -> SampleInfo:
+    return SampleInfo(
+        data=data,
+        duration=sample.duration,
+        desc_index=sample.desc_index,
+        iv=sample.iv,
+        subsamples=sample.subsamples,
+        size=sample.size or len(data),
+        data_path=sample.data_path,
+        data_offset=sample.data_offset,
+    )
 
 
 def read_box_header(f: BinaryIO) -> tuple[int, str, int]:
@@ -107,7 +145,7 @@ def find_box(data: bytes, box_path: List[str]) -> Optional[bytes]:
     return f.read()
 
 
-def extract_song(input_path: str) -> SongInfo:
+def extract_song(input_path: str, file_backed_samples: bool = False) -> SongInfo:
     """
     Extract song samples and metadata from encrypted MP4 file.
 
@@ -206,6 +244,7 @@ def extract_song(input_path: str) -> SongInfo:
                 moof_offset=moof_box["offset"],
                 mdat_data_offset=box["offset"] + box["header_size"],
                 per_sample_iv_size=_iv_size,
+                mdat_source_path=input_path if file_backed_samples else None,
             )
             song_info.samples.extend(samples_from_pair)
             moof_box = None
@@ -223,6 +262,7 @@ def _parse_moof_mdat(
     moof_offset: int = 0,
     mdat_data_offset: int = 0,
     per_sample_iv_size: int = 0,
+    mdat_source_path: str | None = None,
 ) -> List[SampleInfo]:
     """Parse a moof box and extract samples from corresponding mdat.
 
@@ -234,6 +274,7 @@ def _parse_moof_mdat(
         moof_offset: Absolute file offset of the moof box.
         mdat_data_offset: Absolute file offset of the mdat content (after header).
         per_sample_iv_size: IV size per sample from tenc (0, 8, or 16).
+        mdat_source_path: When set, samples store file offsets instead of bytes.
     """
     samples = []
 
@@ -324,14 +365,22 @@ def _parse_moof_mdat(
                         sample_iv = senc_entries[i]["iv"]
                         sample_subsamples = senc_entries[i]["subsamples"]
 
-                    sample = SampleInfo(
-                        data=mdat_data[
+                    sample_data = b""
+                    sample_data_offset = mdat_data_offset + mdat_read_offset
+                    if not mdat_source_path:
+                        sample_data = mdat_data[
                             mdat_read_offset : mdat_read_offset + sample_size
-                        ],
+                        ]
+
+                    sample = SampleInfo(
+                        data=sample_data,
                         duration=sample_duration,
                         desc_index=desc_index,
                         iv=sample_iv,
                         subsamples=sample_subsamples,
+                        size=sample_size,
+                        data_path=mdat_source_path,
+                        data_offset=sample_data_offset if mdat_source_path else 0,
                     )
                     samples.append(sample)
                     mdat_read_offset += sample_size
@@ -471,7 +520,9 @@ async def decrypt_samples(
     samples: List[SampleInfo],
     encryption_info: EncryptionInfo,
     encryption_info_per_desc: Optional[dict] = None,
+    use_single_content_key: bool = False,
     progress_callback=None,
+    decrypted_data_path: str | None = None,
 ) -> bytes:
     """
     Send samples to wrapper for CBCS decryption and return decrypted data.
@@ -494,26 +545,39 @@ async def decrypt_samples(
 
     reader, writer = await asyncio.open_connection(host, port)
 
+    payload_file = open(decrypted_data_path, "wb") if decrypted_data_path else None
+
+    def emit(data: bytes) -> None:
+        if payload_file:
+            payload_file.write(data)
+        else:
+            decrypted_data.extend(data)
+
     try:
         decrypted_data = bytearray()
+        decrypted_size = 0
         last_desc_index = 255
 
-        keys = [PREFETCH_KEY, fairplay_key]
+        keys = [fairplay_key] if use_single_content_key else [PREFETCH_KEY, fairplay_key]
         total_samples = len(samples)
         bytes_processed = 0
         start_time = time.time()
         last_progress_time = start_time
 
         for i, sample in enumerate(samples):
-            if sample.desc_index == 0:
+            if not sample.data and sample.data_path:
+                sample = _with_sample_data(sample, _sample_data(sample))
+
+            if not use_single_content_key and sample.desc_index == 0:
                 decrypted_sample = decrypt_samples_hex(
                     [sample],
                     {0: DEFAULT_SONG_DECRYPTION_KEY},
                     encryption_info,
                     encryption_info_per_desc,
                 )
-                decrypted_data.extend(decrypted_sample)
-                bytes_processed += len(sample.data)
+                emit(decrypted_sample)
+                decrypted_size += len(decrypted_sample)
+                bytes_processed += _sample_size(sample)
 
                 now = time.time()
                 if progress_callback and (
@@ -533,7 +597,10 @@ async def decrypt_samples(
                     await writer.drain()
 
                 # Send new key info
-                key_uri = keys[min(sample.desc_index, len(keys) - 1)]
+                if use_single_content_key:
+                    key_uri = fairplay_key
+                else:
+                    key_uri = keys[min(sample.desc_index, len(keys) - 1)]
 
                 if key_uri == PREFETCH_KEY:
                     id_bytes = b"0"
@@ -550,13 +617,13 @@ async def decrypt_samples(
                 last_desc_index = sample.desc_index
 
             # CBCS full subsample decryption: truncate to 16-byte boundary
-            sample_len = len(sample.data)
+            sample_len = _sample_size(sample)
             truncated_len = sample_len & ~0xF
 
             if truncated_len > 0:
                 # Send size and data
                 writer.write(struct.pack("<I", truncated_len))
-                writer.write(sample.data[:truncated_len])
+                writer.write(_sample_data(sample)[:truncated_len])
                 await writer.drain()
 
                 # Read decrypted data
@@ -565,12 +632,15 @@ async def decrypt_samples(
                     raise IOError(
                         f"Short read: got {len(decrypted_sample)}, expected {truncated_len}"
                     )
-                decrypted_data.extend(decrypted_sample)
+                emit(decrypted_sample)
+                decrypted_size += len(decrypted_sample)
                 bytes_processed += truncated_len
 
             # Append clear bytes
             if truncated_len < sample_len:
-                decrypted_data.extend(sample.data[truncated_len:])
+                clear_tail = _sample_data(sample)[truncated_len:]
+                emit(clear_tail)
+                decrypted_size += len(clear_tail)
                 bytes_processed += sample_len - truncated_len
 
             # Call progress callback every 50 samples or 0.5s
@@ -587,10 +657,15 @@ async def decrypt_samples(
         writer.write(bytes([0, 0, 0, 0, 0]))
         await writer.drain()
 
-        logger.debug(f"Decrypted {len(samples)} samples ({len(decrypted_data)} bytes)")
+        if payload_file:
+            payload_file.flush()
+
+        logger.debug(f"Decrypted {len(samples)} samples ({decrypted_size} bytes)")
         return bytes(decrypted_data)
 
     finally:
+        if payload_file:
+            payload_file.close()
         writer.close()
         await writer.wait_closed()
 
@@ -600,6 +675,8 @@ def write_decrypted_m4a(
     song_info: SongInfo,
     decrypted_data: bytes,
     original_path: str = None,
+    decrypted_data_path: str | None = None,
+    decrypted_data_size: int | None = None,
 ) -> None:
     """
     Write decrypted MP4 file as non-fragmented MP4.
@@ -655,6 +732,15 @@ def write_decrypted_m4a(
                         orig_smhd = _find_child_box(minf, b"smhd")
                         orig_dinf = _find_child_box(minf, b"dinf")
 
+    if decrypted_data_path:
+        payload_size = (
+            decrypted_data_size
+            if decrypted_data_size is not None
+            else os.path.getsize(decrypted_data_path)
+        )
+    else:
+        payload_size = len(decrypted_data)
+
     with open(output_path, "wb") as f:
         # Write ftyp
         _write_ftyp(f)
@@ -669,7 +755,7 @@ def write_decrypted_m4a(
             total_duration,
             timescale,
             stsd_content,
-            decrypted_data,
+            decrypted_data if decrypted_data_path is None else b"",
             orig_mvhd=orig_mvhd,
             orig_tkhd=orig_tkhd,
             orig_mdhd=orig_mdhd,
@@ -679,7 +765,10 @@ def write_decrypted_m4a(
         )
 
         # Write mdat
-        _write_mdat(f, decrypted_data)
+        if decrypted_data_path:
+            _write_mdat_from_file(f, decrypted_data_path, payload_size)
+        else:
+            _write_mdat(f, decrypted_data)
 
     logger.debug(f"Wrote decrypted file to {output_path}")
 
@@ -842,7 +931,7 @@ def _write_moov(
     stsz_content = struct.pack(">I", 0)  # sample_size (0 = variable)
     stsz_content += struct.pack(">I", len(samples))  # sample_count
     for sample in samples:
-        stsz_content += struct.pack(">I", len(sample.data))
+        stsz_content += struct.pack(">I", _sample_size(sample))
     _write_fullbox(f, b"stsz", 0, 0, stsz_content)
 
     # stco (chunk offset) - will be fixed up later
@@ -979,6 +1068,34 @@ def _write_mdat(f, data: bytes):
     f.write(struct.pack(">I", size))
     f.write(b"mdat")
     f.write(data)
+
+
+def _copy_file_range(
+    output_file: BinaryIO,
+    input_path: str,
+    offset: int,
+    size: int,
+    chunk_size: int = 1024 * 1024,
+) -> None:
+    remaining = size
+    with open(input_path, "rb") as input_file:
+        input_file.seek(offset)
+        while remaining:
+            chunk = input_file.read(min(chunk_size, remaining))
+            if not chunk:
+                raise IOError(
+                    f"unexpected EOF while copying {size} bytes from {input_path}"
+                )
+            output_file.write(chunk)
+            remaining -= len(chunk)
+
+
+def _write_mdat_from_file(f: BinaryIO, data_path: str, data_size: int) -> None:
+    """Write mdat box by streaming decrypted payload from a file."""
+    size = data_size + 8
+    f.write(struct.pack(">I", size))
+    f.write(b"mdat")
+    _copy_file_range(f, data_path, 0, data_size)
 
 
 def _extract_stsd_content(data: bytes) -> Optional[bytes]:
@@ -1636,6 +1753,8 @@ async def decrypt_file(
     fairplay_key: str,
     input_path: str,
     output_path: str,
+    use_single_content_key: bool = False,
+    file_backed_samples: bool = False,
     progress_callback=None,
 ) -> None:
     """
@@ -1657,7 +1776,11 @@ async def decrypt_file(
     logger.debug(f"Decrypting {input_path} -> {output_path}")
 
     # Extract samples (run in thread to not block)
-    song_info = await asyncio.to_thread(extract_song, input_path)
+    song_info = await asyncio.to_thread(
+        extract_song,
+        input_path,
+        file_backed_samples,
+    )
     enc_info = song_info.encryption_info or EncryptionInfo(scheme_type="cbcs")
     enc_info_per_desc = None
     if song_info.moov_data:
@@ -1665,26 +1788,41 @@ async def decrypt_file(
             _extract_encryption_info_per_stsd, song_info.moov_data
         )
 
-    # Decrypt samples via wrapper
-    decrypted_data = await decrypt_samples(
-        wrapper_ip,
-        track_id,
-        fairplay_key,
-        song_info.samples,
-        enc_info,
-        enc_info_per_desc,
-        progress_callback,
-    )
+    temp_payload_path = None
+    try:
+        if file_backed_samples:
+            with tempfile.NamedTemporaryFile(
+                prefix="gamdl_decrypted_", suffix=".bin", delete=False
+            ) as temp_payload:
+                temp_payload_path = temp_payload.name
 
-    # Write output file (preserve original structure, replace mdat content)
-    # Encryption metadata is automatically cleaned during stsd extraction
-    await asyncio.to_thread(
-        write_decrypted_m4a,
-        output_path,
-        song_info,
-        decrypted_data,
-        input_path,  # Pass original path for codec info extraction
-    )
+        # Decrypt samples via wrapper
+        decrypted_data = await decrypt_samples(
+            wrapper_ip,
+            track_id,
+            fairplay_key,
+            song_info.samples,
+            enc_info,
+            enc_info_per_desc,
+            use_single_content_key,
+            progress_callback,
+            decrypted_data_path=temp_payload_path,
+        )
+
+        # Write output file (preserve original structure, replace mdat content)
+        # Encryption metadata is automatically cleaned during stsd extraction
+        await asyncio.to_thread(
+            write_decrypted_m4a,
+            output_path,
+            song_info,
+            decrypted_data,
+            input_path,  # Pass original path for codec info extraction
+            temp_payload_path,
+            os.path.getsize(temp_payload_path) if temp_payload_path else None,
+        )
+    finally:
+        if temp_payload_path and os.path.exists(temp_payload_path):
+            os.unlink(temp_payload_path)
 
 
 def decrypt_samples_hex(
@@ -1711,10 +1849,13 @@ def decrypt_samples_hex(
     decrypted = bytearray()
 
     for sample in samples:
+        if not sample.data and sample.data_path:
+            sample = _with_sample_data(sample, _sample_data(sample))
+
         key = keys.get(sample.desc_index)
         if key is None:
             # No key for this desc_index — keep data as-is (shouldn't happen)
-            decrypted.extend(sample.data)
+            decrypted.extend(_sample_data(sample))
             continue
 
         # Get encryption info for this sample's desc_index (if per-description info exists)
@@ -1803,7 +1944,7 @@ def decrypt_samples_hex(
             else:
                 # Full subsample: for well-formed files, the entire sample should be
                 # a multiple of 16 bytes. Only truncate if misaligned (unexpected).
-                sample_len = len(sample.data)
+                sample_len = _sample_size(sample)
                 if sample_len % 16 == 0:
                     # Data is properly 16-byte aligned, decrypt as-is
                     cipher = AES.new(key, AES.MODE_CBC, iv=iv)
@@ -1826,11 +1967,38 @@ def decrypt_samples_hex(
     return bytes(decrypted)
 
 
+def decrypt_samples_hex_to_file(
+    samples: List[SampleInfo],
+    keys: dict,
+    encryption_info: EncryptionInfo,
+    output_path: str,
+    encryption_info_per_desc: Optional[dict] = None,
+) -> int:
+    """Decrypt samples with hex keys and stream decrypted payload to a file."""
+    bytes_written = 0
+    with open(output_path, "wb") as output_file:
+        for sample in samples:
+            decrypted_sample = decrypt_samples_hex(
+                [sample], keys, encryption_info, encryption_info_per_desc
+            )
+            output_file.write(decrypted_sample)
+            bytes_written += len(decrypted_sample)
+
+    logger.debug(
+        f"Decrypted {len(samples)} samples ({bytes_written} bytes) "
+        f"with hex keys to {output_path}"
+    )
+    return bytes_written
+
+
 async def decrypt_file_hex(
     input_path: str,
     output_path: str,
     decryption_key: str,
     legacy: bool = False,
+    use_cenc: bool = False,
+    use_single_content_key: bool = False,
+    file_backed_samples: bool = False,
 ) -> None:
     """Decrypt an encrypted MP4 file using a hex AES key (no wrapper/mp4decrypt).
 
@@ -1848,14 +2016,18 @@ async def decrypt_file_hex(
     logger.debug(f"Hex-key decrypt: {input_path} -> {output_path}")
 
     # Extract samples (run in thread to not block)
-    song_info = await asyncio.to_thread(extract_song, input_path)
+    song_info = await asyncio.to_thread(
+        extract_song,
+        input_path,
+        file_backed_samples,
+    )
 
     # Build key mapping: desc_index → raw AES key bytes
     track_key = bytes.fromhex(decryption_key)
 
-    if legacy:
-        # Legacy AAC (cenc): single key for all samples (all desc_index 0)
-        keys = {0: track_key}
+    if legacy or use_single_content_key:
+        # Legacy/web AAC uses one content key for every sample description.
+        keys = {sample.desc_index: track_key for sample in song_info.samples}
     else:
         # Non-legacy (cbcs): two sample descriptions
         #   desc_index 0 → DEFAULT_SONG_DECRYPTION_KEY (prefetch samples)
@@ -1864,8 +2036,15 @@ async def decrypt_file_hex(
 
     # Use encryption info from the file (fall back to sensible defaults)
     enc_info = song_info.encryption_info or EncryptionInfo(
-        scheme_type="cenc" if legacy else "cbcs"
+        scheme_type="cenc" if legacy or use_cenc else "cbcs"
     )
+    if use_cenc and enc_info.scheme_type != "cenc":
+        enc_info = EncryptionInfo(
+            scheme_type="cenc",
+            per_sample_iv_size=enc_info.per_sample_iv_size,
+            constant_iv=enc_info.constant_iv,
+            kid=enc_info.kid,
+        )
 
     # Try to extract per-description encryption info (for non-legacy files)
     # This handles cases where desc_index 0 and 1 have different encryption parameters
@@ -1879,16 +2058,40 @@ async def decrypt_file_hex(
                 f"Found per-description encryption info: {list(enc_info_per_desc.keys())}"
             )
 
-    # Decrypt
-    decrypted_data = decrypt_samples_hex(
-        song_info.samples, keys, enc_info, enc_info_per_desc
-    )
+    temp_payload_path = None
+    try:
+        if file_backed_samples:
+            with tempfile.NamedTemporaryFile(
+                prefix="gamdl_decrypted_", suffix=".bin", delete=False
+            ) as temp_payload:
+                temp_payload_path = temp_payload.name
 
-    # Write output (preserves original metadata boxes)
-    await asyncio.to_thread(
-        write_decrypted_m4a,
-        output_path,
-        song_info,
-        decrypted_data,
-        input_path,
-    )
+            decrypted_data_size = await asyncio.to_thread(
+                decrypt_samples_hex_to_file,
+                song_info.samples,
+                keys,
+                enc_info,
+                temp_payload_path,
+                enc_info_per_desc,
+            )
+            decrypted_data = b""
+        else:
+            # Decrypt
+            decrypted_data = decrypt_samples_hex(
+                song_info.samples, keys, enc_info, enc_info_per_desc
+            )
+            decrypted_data_size = None
+
+        # Write output (preserves original metadata boxes)
+        await asyncio.to_thread(
+            write_decrypted_m4a,
+            output_path,
+            song_info,
+            decrypted_data,
+            input_path,
+            temp_payload_path,
+            decrypted_data_size,
+        )
+    finally:
+        if temp_payload_path and os.path.exists(temp_payload_path):
+            os.unlink(temp_payload_path)

@@ -119,6 +119,8 @@ class DiagnosticsService:
                 json.dumps(in_memory_logs, ensure_ascii=False, indent=2),
             )
             for log_file in self.paths.logs_dir.glob("*.log"):
+                if log_file.is_symlink() or not log_file.is_file():
+                    continue
                 archive.writestr(
                     f"logs/{log_file.name}",
                     _redact_text(log_file.read_text(encoding="utf-8")),

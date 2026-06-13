@@ -5,9 +5,8 @@ import io
 import json
 import logging
 import re
-from xml.dom import minidom
-from xml.etree import ElementTree
 
+from defusedxml import ElementTree, minidom
 import m3u8
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -140,7 +139,7 @@ class AppleMusicSongInterface(AppleMusicInterface):
             tz=datetime.timezone.utc,
         )
 
-    def _get_lyrics_line_srt(self, index: int, element: ElementTree.Element) -> str:
+    def _get_lyrics_line_srt(self, index: int, element) -> str:
         timestamp_begin_ttml = element.attrib.get("begin")
         timestamp_end_ttml = element.attrib.get("end")
         text = element.text
@@ -155,7 +154,7 @@ class AppleMusicSongInterface(AppleMusicInterface):
             f"{text}\n"
         )
 
-    def _get_lyrics_line_lrc(self, element: ElementTree.Element) -> str:
+    def _get_lyrics_line_lrc(self, element) -> str:
         timestamp_ttml = element.attrib.get("begin")
         text = element.text
 
@@ -225,16 +224,67 @@ class AppleMusicSongInterface(AppleMusicInterface):
 
         return tags
 
+    def _switch_m3u8_master_url_to_default(self, m3u8_master_url: str) -> str:
+        return re.sub(
+            r"(P\d+)_[^/]+(\.m3u8)",
+            r"\1_default\2",
+            m3u8_master_url,
+        )
+
+    def _get_m3u8_master_url_from_webplayback(
+        self,
+        webplayback: dict | None,
+    ) -> str | None:
+        if not webplayback:
+            return None
+
+        m3u8_master_url = webplayback.get("songList", [{}])[0].get("hls-playlist-url")
+        if not m3u8_master_url:
+            return None
+
+        return self._switch_m3u8_master_url_to_default(m3u8_master_url)
+
+    async def _get_m3u8_master_url_from_metadata(
+        self,
+        song_metadata: dict,
+    ) -> str | None:
+        attributes = song_metadata.get("attributes", {})
+        if attributes.get("playParams", {}).get("isLibrary"):
+            return None
+
+        if "extendedAssetUrls" not in attributes:
+            song_metadata = (
+                await self.apple_music_api.get_song(
+                    self.get_media_id_of_library_media(song_metadata),
+                )
+            )["data"][0]
+            attributes = song_metadata.get("attributes", {})
+
+        m3u8_master_url = attributes.get("extendedAssetUrls", {}).get("enhancedHls")
+        if not m3u8_master_url:
+            return None
+
+        return self._switch_m3u8_master_url_to_default(m3u8_master_url)
+
     async def get_stream_info(
         self,
         codec: SongCodec,
         song_metadata: dict | None = None,
         webplayback: dict | None = None,
         m3u8_master_url: str | None = None,
+        is_library: bool = False,
     ) -> StreamInfoAv | None:
+        if is_library:
+            return await self._get_library_stream_info(webplayback)
+
         if codec.is_legacy():
             return await self._get_stream_info_legacy(webplayback, codec)
         else:
+            if m3u8_master_url is None:
+                m3u8_master_url = (
+                    self._get_m3u8_master_url_from_webplayback(webplayback)
+                    or await self._get_m3u8_master_url_from_metadata(song_metadata)
+                )
             return await self._get_stream_info(
                 song_metadata,
                 codec,
@@ -248,15 +298,8 @@ class AppleMusicSongInterface(AppleMusicInterface):
         m3u8_master_url: str | None = None,
     ) -> StreamInfoAv | None:
         if m3u8_master_url is None:
-            if "extendedAssetUrls" not in song_metadata["attributes"]:
-                song_metadata = (
-                    await self.apple_music_api.get_song(
-                        self.get_media_id_of_library_media(song_metadata),
-                    )
-                )["data"][0]
-
-            m3u8_master_url = song_metadata["attributes"]["extendedAssetUrls"].get(
-                "enhancedHls"
+            m3u8_master_url = await self._get_m3u8_master_url_from_metadata(
+                song_metadata,
             )
         if not m3u8_master_url:
             return None
@@ -408,13 +451,29 @@ class AppleMusicSongInterface(AppleMusicInterface):
         self,
         webplayback: dict,
         codec: SongCodec,
-    ) -> StreamInfoAv:
+    ) -> StreamInfoAv | None:
+        if not webplayback:
+            return None
+
         flavor = "32:ctrp64" if codec == SongCodec.AAC_HE_LEGACY else "28:ctrp256"
 
-        stream_info = StreamInfo(legacy=True)
-        stream_info.stream_url = next(
-            i for i in webplayback["songList"][0]["assets"] if i["flavor"] == flavor
-        )["URL"]
+        stream_info = StreamInfo(
+            legacy=True,
+            use_cenc=True,
+            use_single_content_key=True,
+        )
+        asset = next(
+            (
+                i
+                for i in webplayback["songList"][0].get("assets", [])
+                if i["flavor"] == flavor
+            ),
+            None,
+        )
+        if not asset:
+            return None
+
+        stream_info.stream_url = asset["URL"]
 
         m3u8_obj = m3u8.loads((await self._get_response(stream_info.stream_url)).text)
         stream_info.widevine_pssh = m3u8_obj.keys[0].uri
@@ -425,6 +484,32 @@ class AppleMusicSongInterface(AppleMusicInterface):
             file_format=MediaFileFormat.M4A,
         )
         logger.debug(f"Stream info legacy: {stream_info_av}")
+
+        return stream_info_av
+
+    async def _get_library_stream_info(
+        self,
+        webplayback: dict | None,
+    ) -> StreamInfoAv | None:
+        if not webplayback:
+            return None
+
+        assets = webplayback.get("songList", [{}])[0].get("assets", [])
+        if not assets:
+            return None
+
+        stream_info = StreamInfo(
+            stream_url=assets[0]["URL"],
+            legacy=False,
+            drm_free=True,
+        )
+
+        stream_info_av = StreamInfoAv(
+            media_id=webplayback["songList"][0]["songId"],
+            audio_track=stream_info,
+            file_format=MediaFileFormat.M4A,
+        )
+        logger.debug(f"Library stream info: {stream_info_av}")
 
         return stream_info_av
 

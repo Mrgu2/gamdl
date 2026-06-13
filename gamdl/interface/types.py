@@ -122,6 +122,9 @@ class StreamInfo:
     width: int = None
     height: int = None
     legacy: bool = None
+    drm_free: bool = False
+    use_cenc: bool = False
+    use_single_content_key: bool = False
 
 
 @dataclass

@@ -7,6 +7,8 @@ from pathlib import Path
 from mutagen.mp4 import MP4, MP4Cover
 from pywidevine import Cdm, Device
 from yt_dlp import YoutubeDL
+from yt_dlp.downloader.hls import HlsFD
+from yt_dlp.downloader.http import HttpFD
 
 from ..network import NetworkConfig, httpx_client_kwargs, should_bypass_proxy
 from ..interface.enums import CoverFormat
@@ -171,6 +173,8 @@ class AppleMusicBaseDownloader:
 
         if file_ext is None:
             sanitized_string = sanitized_string[: self.truncate]
+            if sanitized_string.strip() in {"", ".", ".."}:
+                return ILLEGAL_CHAR_REPLACEMENT
             if sanitized_string.endswith("."):
                 sanitized_string = sanitized_string[:-1] + ILLEGAL_CHAR_REPLACEMENT
         else:
@@ -178,7 +182,10 @@ class AppleMusicBaseDownloader:
                 sanitized_string = sanitized_string[: self.truncate - len(file_ext)]
             sanitized_string += file_ext
 
-        return sanitized_string.strip()
+        sanitized_string = sanitized_string.strip()
+        if sanitized_string in {"", ".", ".."}:
+            return ILLEGAL_CHAR_REPLACEMENT
+        return sanitized_string
 
     @staticmethod
     def sanitize_string_without_truncate(dirty_string: str) -> str:
@@ -187,9 +194,14 @@ class AppleMusicBaseDownloader:
             ILLEGAL_CHAR_REPLACEMENT,
             dirty_string,
         )
+        if sanitized_string.strip() in {"", ".", ".."}:
+            return ILLEGAL_CHAR_REPLACEMENT
         if sanitized_string.endswith("."):
             sanitized_string = sanitized_string[:-1] + ILLEGAL_CHAR_REPLACEMENT
-        return sanitized_string.strip()
+        sanitized_string = sanitized_string.strip()
+        if sanitized_string in {"", ".", ".."}:
+            return ILLEGAL_CHAR_REPLACEMENT
+        return sanitized_string
 
     def get_final_path(
         self,
@@ -341,16 +353,16 @@ class AppleMusicBaseDownloader:
         )
 
     def _download_ytdlp(self, stream_url: str, download_path: str) -> None:
+        Path(download_path).parent.mkdir(parents=True, exist_ok=True)
         client_kwargs = httpx_client_kwargs(self.network_config)
         ytdlp_options = {
             "quiet": True,
             "no_warnings": True,
-            "outtmpl": download_path,
             "allow_unplayable_formats": True,
             "overwrites": True,
             "fixup": "never",
             "noprogress": self.silent,
-            "allowed_extractors": ["generic"],
+            "concurrent_fragment_downloads": 8,
         }
         if client_kwargs.get("trust_env") is False and not should_bypass_proxy(stream_url):
             ytdlp_options["proxy"] = client_kwargs.get("proxy", "")
@@ -358,7 +370,29 @@ class AppleMusicBaseDownloader:
         with YoutubeDL(
             ytdlp_options
         ) as ydl:
-            ydl.download(stream_url)
+            stream_url_path = stream_url.split("?", 1)[0]
+            if stream_url_path.endswith(".m3u8"):
+                downloader = HlsFD(ydl, ydl.params)
+                success, _ = downloader.download(
+                    download_path,
+                    {
+                        "url": stream_url,
+                        "ext": "mp4",
+                        "protocol": "m3u8",
+                    },
+                )
+                if not success:
+                    raise RuntimeError("yt-dlp HLS download failed")
+            else:
+                downloader = HttpFD(ydl, ydl.params)
+                success, _ = downloader.download(
+                    download_path,
+                    {
+                        "url": stream_url,
+                    },
+                )
+                if not success:
+                    raise RuntimeError("yt-dlp HTTP download failed")
 
     async def download_nm3u8dlre(self, stream_url: str, download_path: str):
         download_path_obj = Path(download_path)

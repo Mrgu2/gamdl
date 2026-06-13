@@ -100,6 +100,8 @@ resolve_ffmpeg_source() {
 cd "$ROOT_DIR"
 rm -rf "$BUILD_DIR" "$APP_PATH" "$DMG_PATH"
 mkdir -p "$DIST_DIR" "$BUILD_DIR"
+export PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-$BUILD_DIR/pyinstaller-cache}"
+mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 if ! FFMPEG_SOURCE="$(resolve_ffmpeg_source)"; then
   echo "No ffmpeg found for $MACOS_ARCH. Set MACOS_FFMPEG_PATH or provide assets/macos/ffmpeg-$MACOS_ARCH."

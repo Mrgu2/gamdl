@@ -1,6 +1,6 @@
-# Gamdl Desktop Fork 1.1.3
+# Gamdl Desktop Fork 1.1.4
 
-[![Release](https://img.shields.io/badge/release-1.1.3-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
+[![Release](https://img.shields.io/badge/release-1.1.4-0a84ff)](https://github.com/Mrgu2/gu_music_downloader/releases)
 [![License](https://img.shields.io/github/license/Mrgu2/gu_music_downloader)](https://github.com/Mrgu2/gu_music_downloader/blob/codex/alac-download/LICENSE)
 
 <p align="center">
@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`Gamdl Desktop Fork 1.1.3` 的目标很明确：
+`Gamdl Desktop Fork 1.1.4` 的目标很明确：
 
 - 提供开箱即用的桌面客户端，而不是只给命令行
 - 默认覆盖最常用场景：歌曲、专辑、歌单、艺术家下载
@@ -26,9 +26,9 @@
 - 当前修改分支：[codex/alac-download](https://github.com/Mrgu2/gu_music_downloader/tree/codex/alac-download)
 - 上游项目：[glomatico/gamdl](https://github.com/glomatico/gamdl)
 
-## 1.1.3 发布内容
+## 1.1.4 发布内容
 
-正式版 `1.1.3` 这次继续发布 macOS 桌面包：
+正式版 `1.1.4` 这次继续发布 macOS 桌面包，并同时覆盖 Apple Silicon 与 Intel 机型：
 
 - `Apple Music Downloader-arm64.dmg`
   - 面向 Apple Silicon Mac
@@ -39,15 +39,16 @@
 
 源码仓库仍然保留 CLI、Windows 启动器和开发环境，适合高级用户自行构建或二次修改。
 
-本次版本主要覆盖任务取消链路、元数据语言即时生效、Web GUI 表单显隐修复，以及转换流程的一轮稳定性收口，并继续沿用之前 release 的分发方式：
+本次版本主要覆盖 Apple Music 网页与 API 更新后的兼容性、下载解密内存优化，以及本地桌面端安全审查收口，并继续沿用之前 release 的分发方式：
 
-- Web GUI 任务页现在支持取消排队中和运行中的任务；已请求取消的运行中任务会明确显示“取消中，当前文件完成后停止”
-- 下载与转换服务新增协作式取消检查；转换中的 `ffmpeg` 进程会在收到取消请求后主动终止，避免界面已取消但后台继续长时间运行
-- 任务 API 现在会回传 `cancel_requested` 状态，前端取消按钮和状态徽标会同步反映当前取消进度，并避免重复点击
-- 元数据语言的前端展示、下载提交和登录 / 浏览器导入请求现在统一读取当前表单值；即使尚未点“保存设置”，本次操作也会按当前选择即时生效
-- Web GUI 设置页恢复正确的 `hidden` 显隐语义；“自定义语言代码”“代理地址”等应隐藏字段不会再被全局样式错误显示出来
-- 修复无封面 `m4a/mp4` 在转换时误走 ID3 封面读取分支导致立即失败的问题；现在这类文件也能正常进入转换与取消流程
-- 补充 Web GUI、设置与转换取消相关回归测试，覆盖排队取消、运行中取消、语言归一化与 `ffmpeg` 终止路径
+- 修复 Apple Music 网页更新后登录校验失败的问题；开发者 token 解析现在会从当前 `assets/index~...js` 和 legacy 入口中识别有效 JWT
+- 移植 Apple Music API 兼容性修复，覆盖分页、library media、library song / music-video URL 以及单曲 m3u8 master URL fallback
+- 支持 DRM-free library song 直接下载，避免无解密 key 时被误判为格式不可用
+- 下载核心补强：yt-dlp 下载现在按流类型直接使用 HlsFD / HttpFD，song 解密会传递 CENC 与 single content key 标记
+- 进一步降低 song 解密峰值内存；file-backed 解密模式会把解密后的 payload 写入临时文件，并从临时文件流式写入最终 `mdat`
+- 依赖安全升级：重锁 `urllib3`、`cryptography` 与 `idna` 到包含最新安全修复的版本
+- 本地 Web API、诊断包导出、配置 / 会话文件权限、下载路径组件、歌词 XML 解析和桌面文件打开链路都完成一轮安全硬化
+- 新增 `docs/security-audit-2026-06-12.md`，记录本轮安全审查范围、修复项、验证命令和剩余低风险判断
 - 本次不附带 Windows 现成安装包；如需 Windows，请自行用 agent 修改并编译
 - 如果你要在 Windows 上继续推进，推荐直接使用 Claude Code 或 Codex
 
@@ -109,7 +110,7 @@ macOS 包说明：
 
 ### Windows
 
-当前 `1.1.3` release 不附带 Windows 安装包。
+当前 `1.1.4` release 不附带 Windows 安装包。
 
 Windows 包说明：
 

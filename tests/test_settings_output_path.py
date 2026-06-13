@@ -1,10 +1,15 @@
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from gamdl.app import AppPaths, AppSettingsStore
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 class AppSettingsOutputPathTests(unittest.TestCase):
@@ -55,6 +60,29 @@ class AppSettingsOutputPathTests(unittest.TestCase):
         )
 
         self.assertEqual(settings.language, "ja-JP")
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions are not stable on Windows")
+    def test_save_uses_private_settings_file_permissions(self):
+        target = Path(self.tempdir.name) / "downloads"
+
+        self.store.save(
+            {
+                "output_path": str(target),
+                "network_mode": "custom",
+                "proxy_url": "http://alice:secret@127.0.0.1:7890",
+            }
+        )
+
+        self.assertEqual(_mode(self.paths.settings_path) & 0o077, 0)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions are not stable on Windows")
+    def test_paths_ensure_uses_private_directory_permissions(self):
+        self.paths.ensure()
+
+        self.assertEqual(_mode(self.paths.app_support_dir) & 0o077, 0)
+        self.assertEqual(_mode(self.paths.logs_dir) & 0o077, 0)
+        self.assertEqual(_mode(self.paths.diagnostics_dir) & 0o077, 0)
+        self.assertEqual(_mode(self.paths.temp_dir) & 0o077, 0)
 
     def test_save_accepts_short_metadata_language(self):
         target = Path(self.tempdir.name) / "downloads"

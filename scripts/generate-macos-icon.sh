@@ -15,7 +15,19 @@ fi
 
 mkdir -p "$ICONSET_DIR"
 
-sips -s format png "$SOURCE_SVG" --out "$MASTER_PNG" >/dev/null
+if [[ -f "$MASTER_PNG" ]] && sips -g pixelWidth -g pixelHeight "$MASTER_PNG" >/dev/null 2>&1; then
+  :
+else
+  sips -s format png "$SOURCE_SVG" --out "$MASTER_PNG" >/dev/null
+fi
+
+if [[ -s "$ICNS_PATH" ]]; then
+  echo "Using existing macOS icon assets:"
+  echo "  $MASTER_PNG"
+  echo "  $ICONSET_DIR"
+  echo "  $ICNS_PATH"
+  exit 0
+fi
 
 make_icon() {
   local size="$1"

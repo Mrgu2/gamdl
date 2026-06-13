@@ -1,9 +1,11 @@
+import base64
+import json
 import logging
 import re
 import typing
 from http.cookiejar import MozillaCookieJar
 from ipaddress import ip_address
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 
@@ -22,6 +24,14 @@ logger = logging.getLogger(__name__)
 WRAPPER_ACCOUNT_URL_ERROR = (
     "Wrapper account API 地址必须是本机回环地址，例如 http://127.0.0.1:30020/。"
 )
+APPLE_MUSIC_DEVELOPER_TOKEN_ERROR = (
+    "未能从 Apple Music 页面获取开发者 token。Apple Music 网页结构可能已变更，请更新应用后重试。"
+)
+APPLE_MUSIC_SCRIPT_URI_RE = re.compile(
+    r"""<script[^>]+src=["']([^"']*(?:assets/index|index-legacy)[^"']*\.js[^"']*)["']""",
+    re.IGNORECASE,
+)
+JWT_RE = re.compile(r"\b(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b")
 
 
 def _matches_apple_music_cookie_domain(domain: str) -> bool:
@@ -58,6 +68,49 @@ def normalize_wrapper_account_url(wrapper_account_url: str) -> str:
         netloc_host = f"[{netloc_host}]"
     netloc = f"{netloc_host}:{port}" if port is not None else netloc_host
     return parsed._replace(netloc=netloc, path=path, params="", query="", fragment="").geturl()
+
+
+def _decode_jwt_part(part: str) -> dict:
+    padded = part + "=" * ((4 - len(part) % 4) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+
+
+def _is_apple_music_developer_token(token: str) -> bool:
+    try:
+        header_part, payload_part, _signature_part = token.split(".", 2)
+        header = _decode_jwt_part(header_part)
+        payload = _decode_jwt_part(payload_part)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        return False
+    return (
+        header.get("typ") == "JWT"
+        and header.get("kid") == "WebPlayKid"
+        and payload.get("iss") == "AMPWebPlay"
+        and "exp" in payload
+    )
+
+
+def _extract_apple_music_script_uris(home_page: str) -> list[str]:
+    seen: set[str] = set()
+    script_uris: list[str] = []
+    for match in APPLE_MUSIC_SCRIPT_URI_RE.finditer(home_page):
+        script_uri = match.group(1)
+        if script_uri in seen:
+            continue
+        seen.add(script_uri)
+        script_uris.append(script_uri)
+    return script_uris
+
+
+def _extract_developer_token(script_text: str) -> str | None:
+    fallback_token: str | None = None
+    for match in JWT_RE.finditer(script_text):
+        token = match.group(1)
+        if _is_apple_music_developer_token(token):
+            return token
+        if fallback_token is None:
+            fallback_token = token
+    return fallback_token
 
 
 class AppleMusicApi:
@@ -189,22 +242,17 @@ class AppleMusicApi:
         response = await self.client.get(APPLE_MUSIC_HOMEPAGE_URL)
         home_page = response.text
 
-        index_js_uri_match = re.search(
-            r"/(assets/index-legacy[~-][^/\"]+\.js)",
-            home_page,
-        )
-        if not index_js_uri_match:
-            raise Exception("index.js URI not found in Apple Music homepage")
-        index_js_uri = index_js_uri_match.group(1)
+        script_uris = _extract_apple_music_script_uris(home_page)
+        if not script_uris:
+            raise RuntimeError(APPLE_MUSIC_DEVELOPER_TOKEN_ERROR)
 
-        response = await self.client.get(f"{APPLE_MUSIC_HOMEPAGE_URL}/{index_js_uri}")
-        index_js_page = response.text
+        for script_uri in script_uris:
+            response = await self.client.get(urljoin(APPLE_MUSIC_HOMEPAGE_URL, script_uri))
+            token = _extract_developer_token(response.text)
+            if token:
+                return token
 
-        token_match = re.search('(?=eyJh)(.*?)(?=")', index_js_page)
-        if not token_match:
-            raise Exception("Token not found in index.js page")
-        token = token_match.group(1)
-        return token
+        raise RuntimeError(APPLE_MUSIC_DEVELOPER_TOKEN_ERROR)
 
     async def _initialize_token(self) -> None:
         self.token = self.token or await self._get_token()
@@ -404,6 +452,38 @@ class AppleMusicApi:
 
         return playlist
 
+    async def get_library_song(
+        self,
+        song_id: str,
+        include: str = "catalog",
+        extend: str = "extendedAssetUrls",
+    ) -> dict | None:
+        song = await self._amp_request(
+            f"/v1/me/library/songs/{song_id}",
+            {
+                "include": include,
+                "extend": extend,
+            },
+        )
+        logger.debug(f"Library song: {song}")
+
+        return song
+
+    async def get_library_music_video(
+        self,
+        music_video_id: str,
+        include: str = "catalog",
+    ) -> dict | None:
+        music_video = await self._amp_request(
+            f"/v1/me/library/music-videos/{music_video_id}",
+            {
+                "include": include,
+            },
+        )
+        logger.debug(f"Library music video: {music_video}")
+
+        return music_video
+
     async def get_search_results(
         self,
         term: str,
@@ -433,12 +513,10 @@ class AppleMusicApi:
         if not next_uri:
             return
 
-        next_uri_params = parse_qs(urlparse(next_uri).query)
-        limit = int(next_uri_params["offset"][0])
         while next_uri:
             extended_api_data = await self._get_extended_api_data(
                 next_uri,
-                limit,
+                api_response.get("href"),
                 extend,
             )
             yield extended_api_data
@@ -447,16 +525,22 @@ class AppleMusicApi:
     async def _get_extended_api_data(
         self,
         next_uri: str,
-        limit: int,
+        href_uri: str | None,
         extend: str,
     ) -> dict:
+        href_params = parse_qs(urlparse(href_uri or "").query)
         next_uri_params = parse_qs(urlparse(next_uri).query)
+        limit = href_params.get("limit")
         params = {
-            "limit": limit,
-            "offset": next_uri_params["offset"][0],
+            **({"limit": limit[0]} if limit else {}),
+            **{
+                key: values[0] if len(values) == 1 else values
+                for key, values in next_uri_params.items()
+                if key != "limit"
+            },
             "extend": extend,
         }
-        extended_api_data = await self._amp_request(next_uri, params)
+        extended_api_data = await self._amp_request(urlparse(next_uri).path, params)
         logger.debug(f"Extended API data: {extended_api_data}")
 
         return extended_api_data
@@ -464,13 +548,19 @@ class AppleMusicApi:
     async def get_webplayback(
         self,
         track_id: str,
+        is_library: bool = False,
     ) -> dict:
+        request_body = {
+            "language": self.language,
+        }
+        if is_library:
+            request_body["universalLibraryId"] = track_id
+        else:
+            request_body["salableAdamId"] = track_id
+
         response = await self.client.post(
             WEBPLAYBACK_API_URL,
-            json={
-                "salableAdamId": track_id,
-                "language": self.language,
-            },
+            json=request_body,
         )
         webplayback = safe_json(response)
 

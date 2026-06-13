@@ -15,7 +15,7 @@ from typing import Iterable
 from ..api import AppleMusicApi
 from ..api.apple_music_api import _matches_apple_music_cookie_domain
 from ..network import NetworkConfig, build_subprocess_env, normalize_network_config
-from .paths import AppPaths
+from .paths import AppPaths, restrict_permissions
 from .settings import AppSettingsStore
 
 logger = logging.getLogger("gamdl.app.auth")
@@ -201,6 +201,7 @@ class AuthManager:
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        restrict_permissions(self.paths.session_path, 0o600)
 
     def _clear_session(self) -> None:
         self.paths.session_path.unlink(missing_ok=True)

@@ -1,12 +1,28 @@
 import unittest
 import inspect
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from gamdl.network import NetworkConfig
+from gamdl.interface.types import MediaTags, PlaylistTags
 from gamdl.downloader.downloader_base import AppleMusicBaseDownloader
 
 
 class AppleMusicBaseDownloaderTests(unittest.TestCase):
+    def _base_downloader_stub(self, output_path: str = "/tmp/out") -> AppleMusicBaseDownloader:
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.output_path = output_path
+        downloader.album_folder_template = "{album_artist}/{album}"
+        downloader.compilation_folder_template = "Compilations/{album}"
+        downloader.no_album_folder_template = "{artist}/Unknown Album"
+        downloader.single_disc_file_template = "{track:02d} {title}"
+        downloader.multi_disc_file_template = "{disc}-{track:02d} {title}"
+        downloader.no_album_file_template = "{title}"
+        downloader.playlist_file_template = "Playlists/{playlist_artist}/{playlist_title}"
+        downloader.truncate = None
+        return downloader
+
     def test_output_path_default_is_machine_neutral(self):
         self.assertEqual(
             AppleMusicBaseDownloader.__init__.__defaults__[0],
@@ -23,6 +39,55 @@ class AppleMusicBaseDownloaderTests(unittest.TestCase):
             .default
         )
 
+    def test_sanitize_string_replaces_reserved_path_segments(self):
+        downloader = self._base_downloader_stub()
+
+        self.assertEqual(downloader.sanitize_string(".."), "_")
+        self.assertEqual(downloader.sanitize_string("."), "_")
+        self.assertEqual(downloader.sanitize_string("   "), "_")
+
+    def test_get_final_path_cannot_escape_output_path_with_reserved_metadata(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            output_path = Path(tempdir) / "downloads"
+            downloader = self._base_downloader_stub(str(output_path))
+            final_path = Path(
+                downloader.get_final_path(
+                    MediaTags(
+                        album_artist="..",
+                        album=".",
+                        title="Safe Song",
+                        track=1,
+                    ),
+                    ".m4a",
+                    None,
+                )
+            )
+
+            self.assertTrue(
+                final_path.resolve().is_relative_to(output_path.resolve())
+            )
+            self.assertNotIn("..", final_path.parts)
+
+    def test_get_playlist_file_path_cannot_escape_output_path_with_reserved_metadata(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            output_path = Path(tempdir) / "downloads"
+            downloader = self._base_downloader_stub(str(output_path))
+            playlist_path = Path(
+                downloader.get_playlist_file_path(
+                    PlaylistTags(
+                        playlist_artist="..",
+                        playlist_title=".",
+                        playlist_id="pl.test",
+                        playlist_track=1,
+                    )
+                )
+            )
+
+            self.assertTrue(
+                playlist_path.resolve().is_relative_to(output_path.resolve())
+            )
+            self.assertNotIn("..", playlist_path.parts)
+
     def test_wrapper_m3u8_ip_uses_matching_port_offset(self):
         downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
         downloader.wrapper_decrypt_ip = "127.0.0.1:10020"
@@ -38,8 +103,10 @@ class AppleMusicBaseDownloaderTests(unittest.TestCase):
         downloader.wrapper_decrypt_ip = "10022"
         self.assertEqual(downloader.get_wrapper_m3u8_ip(), "127.0.0.1:20022")
 
+    @patch("gamdl.downloader.downloader_base.HlsFD")
     @patch("gamdl.downloader.downloader_base.YoutubeDL")
-    def test_download_ytdlp_passes_empty_proxy_in_direct_mode(self, ytdlp_cls):
+    def test_download_ytdlp_passes_empty_proxy_in_direct_mode(self, ytdlp_cls, hls_cls):
+        hls_cls.return_value.download.return_value = (True, None)
         downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
         downloader.network_config = NetworkConfig(mode="direct", proxy_url="")
         downloader.silent = False
@@ -49,8 +116,10 @@ class AppleMusicBaseDownloaderTests(unittest.TestCase):
         options = ytdlp_cls.call_args.args[0]
         self.assertEqual(options["proxy"], "")
 
+    @patch("gamdl.downloader.downloader_base.HlsFD")
     @patch("gamdl.downloader.downloader_base.YoutubeDL")
-    def test_download_ytdlp_passes_custom_proxy(self, ytdlp_cls):
+    def test_download_ytdlp_passes_custom_proxy(self, ytdlp_cls, hls_cls):
+        hls_cls.return_value.download.return_value = (True, None)
         downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
         downloader.network_config = NetworkConfig(mode="custom", proxy_url="http://127.0.0.1:7890")
         downloader.silent = True
@@ -59,6 +128,57 @@ class AppleMusicBaseDownloaderTests(unittest.TestCase):
 
         options = ytdlp_cls.call_args.args[0]
         self.assertEqual(options["proxy"], "http://127.0.0.1:7890")
+
+    @patch("gamdl.downloader.downloader_base.HlsFD")
+    @patch("gamdl.downloader.downloader_base.HttpFD")
+    @patch("gamdl.downloader.downloader_base.YoutubeDL")
+    def test_download_ytdlp_uses_hls_downloader_for_m3u8(self, ytdlp_cls, http_cls, hls_cls):
+        hls_cls.return_value.download.return_value = (True, None)
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.network_config = NetworkConfig(mode="direct", proxy_url="")
+        downloader.silent = False
+
+        downloader._download_ytdlp("https://example.com/master.m3u8?token=1", "/tmp/out.m4a")
+
+        hls_cls.return_value.download.assert_called_once_with(
+            "/tmp/out.m4a",
+            {
+                "url": "https://example.com/master.m3u8?token=1",
+                "ext": "mp4",
+                "protocol": "m3u8",
+            },
+        )
+        http_cls.return_value.download.assert_not_called()
+
+    @patch("gamdl.downloader.downloader_base.HlsFD")
+    @patch("gamdl.downloader.downloader_base.HttpFD")
+    @patch("gamdl.downloader.downloader_base.YoutubeDL")
+    def test_download_ytdlp_uses_http_downloader_for_non_m3u8(self, ytdlp_cls, http_cls, hls_cls):
+        http_cls.return_value.download.return_value = (True, None)
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.network_config = NetworkConfig(mode="direct", proxy_url="")
+        downloader.silent = False
+
+        downloader._download_ytdlp("https://example.com/audio.m4a", "/tmp/out.m4a")
+
+        http_cls.return_value.download.assert_called_once_with(
+            "/tmp/out.m4a",
+            {
+                "url": "https://example.com/audio.m4a",
+            },
+        )
+        hls_cls.return_value.download.assert_not_called()
+
+    @patch("gamdl.downloader.downloader_base.HlsFD")
+    @patch("gamdl.downloader.downloader_base.YoutubeDL")
+    def test_download_ytdlp_raises_when_hls_downloader_fails(self, ytdlp_cls, hls_cls):
+        hls_cls.return_value.download.return_value = (False, None)
+        downloader = AppleMusicBaseDownloader.__new__(AppleMusicBaseDownloader)
+        downloader.network_config = NetworkConfig(mode="direct", proxy_url="")
+        downloader.silent = False
+
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp HLS download failed"):
+            downloader._download_ytdlp("https://example.com/master.m3u8", "/tmp/out.m4a")
 
     @patch("gamdl.downloader.downloader_base.async_subprocess", new_callable=AsyncMock)
     def test_download_nm3u8dlre_passes_network_config(self, async_subprocess_mock):

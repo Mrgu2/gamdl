@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from gamdl.app import DesktopFileActions
+from gamdl.app.file_actions import MAC_OPEN_BIN
 from gamdl.desktop_app import _pick_available_port, _select_file, _select_folder, _select_input_folder, main
 
 
@@ -159,8 +160,8 @@ class DesktopAppTests(unittest.TestCase):
             with patch("gamdl.app.file_actions.subprocess.run") as run_mock:
                 file_actions.open_file(str(target))
                 file_actions.reveal_file(str(target))
-                run_mock.assert_any_call(["open", str(target.resolve())], check=True)
-                run_mock.assert_any_call(["open", "-R", str(target.resolve())], check=True)
+                run_mock.assert_any_call([MAC_OPEN_BIN, str(target.resolve())], check=True)
+                run_mock.assert_any_call([MAC_OPEN_BIN, "-R", str(target.resolve())], check=True)
 
     def test_file_actions_use_custom_application_on_macos(self):
         file_actions = DesktopFileActions(current_platform="Darwin")
@@ -170,7 +171,7 @@ class DesktopAppTests(unittest.TestCase):
             with patch("gamdl.app.file_actions.subprocess.run") as run_mock:
                 file_actions.open_file(str(target), application="VLC")
                 run_mock.assert_called_once_with(
-                    ["open", "-a", "VLC", str(target.resolve())],
+                    [MAC_OPEN_BIN, "-a", "VLC", str(target.resolve())],
                     check=True,
                 )
 
@@ -218,27 +219,58 @@ class DesktopAppTests(unittest.TestCase):
         file_actions = DesktopFileActions(current_platform="Windows")
         with tempfile.TemporaryDirectory() as tempdir:
             target = Path(tempdir) / "song.m4a"
+            application = Path(tempdir) / "vlc.exe"
             target.write_text("audio", encoding="utf-8")
+            application.write_text("exe", encoding="utf-8")
             with patch("gamdl.app.file_actions.subprocess.run") as run_mock:
-                file_actions.open_file(str(target), application="C:/Program Files/VLC/vlc.exe")
+                file_actions.open_file(str(target), application=str(application))
                 run_mock.assert_called_once_with(
-                    ["C:/Program Files/VLC/vlc.exe", str(target.resolve())],
+                    [str(application.resolve()), str(target.resolve())],
                     check=True,
                 )
 
+    def test_file_actions_reject_relative_custom_application_on_windows(self):
+        file_actions = DesktopFileActions(current_platform="Windows")
+        with tempfile.TemporaryDirectory() as tempdir:
+            target = Path(tempdir) / "song.m4a"
+            target.write_text("audio", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "绝对文件路径"):
+                file_actions.open_file(str(target), application="vlc.exe")
+
     def test_file_actions_build_windows_open_with_options(self):
+        file_actions = DesktopFileActions(current_platform="Windows")
+        with tempfile.TemporaryDirectory() as tempdir:
+            target = Path(tempdir) / "song.m4a"
+            application = Path(tempdir) / "vlc.exe"
+            target.write_text("audio", encoding="utf-8")
+            application.write_text("exe", encoding="utf-8")
+            options = file_actions.get_open_with_options(
+                str(target),
+                configured_application=str(application),
+            )
+
+        self.assertEqual(options[0]["kind"], "default")
+        self.assertEqual(options[1]["kind"], "separator")
+        self.assertEqual(options[2]["application_path"], str(application.resolve()))
+
+    def test_file_actions_omit_invalid_windows_open_with_option(self):
         file_actions = DesktopFileActions(current_platform="Windows")
         with tempfile.TemporaryDirectory() as tempdir:
             target = Path(tempdir) / "song.m4a"
             target.write_text("audio", encoding="utf-8")
             options = file_actions.get_open_with_options(
                 str(target),
-                configured_application="C:/Program Files/VLC/vlc.exe",
+                configured_application="vlc.exe",
             )
 
-        self.assertEqual(options[0]["kind"], "default")
-        self.assertEqual(options[1]["kind"], "separator")
-        self.assertEqual(options[2]["application_path"], "C:/Program Files/VLC/vlc.exe")
+        self.assertEqual(options, [
+            {
+                "label": "系统默认应用",
+                "kind": "default",
+                "is_default": True,
+                "application_path": None,
+            }
+        ])
 
     def test_file_actions_reject_unsupported_platform(self):
         file_actions = DesktopFileActions(current_platform="Linux")

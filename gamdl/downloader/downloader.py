@@ -408,7 +408,10 @@ class AppleMusicDownloader:
 
         if url_type in SONG_MEDIA_TYPE:
             try:
-                song_respose = await self.interface.apple_music_api.get_song(id)
+                if is_library:
+                    song_respose = await self.interface.apple_music_api.get_library_song(id)
+                else:
+                    song_respose = await self.interface.apple_music_api.get_song(id)
             except ApiError as e:
                 if e.status_code == 404:
                     return None
@@ -465,9 +468,14 @@ class AppleMusicDownloader:
 
         if url_type in MUSIC_VIDEO_MEDIA_TYPE:
             try:
-                music_video_response = (
-                    await self.interface.apple_music_api.get_music_video(id)
-                )
+                if is_library:
+                    music_video_response = (
+                        await self.interface.apple_music_api.get_library_music_video(id)
+                    )
+                else:
+                    music_video_response = (
+                        await self.interface.apple_music_api.get_music_video(id)
+                    )
             except ApiError as e:
                 if e.status_code == 404:
                     return None
@@ -578,6 +586,7 @@ class AppleMusicDownloader:
                     or not download_item.decryption_key.audio_track
                     or not download_item.decryption_key.audio_track.key
                 )
+                and not download_item.stream_info.audio_track.drm_free
                 and not self.base_downloader.use_wrapper
             )
         ):

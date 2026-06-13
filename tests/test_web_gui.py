@@ -27,8 +27,10 @@ from gamdl.interface.types import PlaylistTags
 from gamdl.web_gui import (
     INDEX_HTML,
     GUI_SETTINGS_DEFAULTS,
+    INVALID_OPEN_APPLICATION_ERROR,
     JobManager,
     Job,
+    MAX_JSON_BODY_BYTES,
     WebGuiHandler,
     WebGuiServer,
     WebGuiServerIPv6,
@@ -622,6 +624,30 @@ class WebGuiApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 403)
         self.assertIn("本地会话令牌", body.decode("utf-8"))
+
+    def test_post_rejects_oversized_json_body(self):
+        target = f"{self.server.session_base_path}/api/preview"
+        request = (
+            f"POST {target} HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            "Connection: close\r\n"
+            "Content-Type: application/json\r\n"
+            f"X-Gamdl-Request-Token: {self.server.api_request_token}\r\n"
+            f"Content-Length: {MAX_JSON_BODY_BYTES + 1}\r\n"
+            "\r\n"
+        )
+        with socket.create_connection((self.host, self.port), timeout=5) as client:
+            client.sendall(request.encode("ascii"))
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            response = b"".join(chunks)
+
+        self.assertIn(b" 413 ", response)
+        self.assertIn("请求体过大".encode("utf-8"), response)
 
     def test_get_rejects_non_loopback_host_header(self):
         status, body, _headers = self._request(
@@ -1219,6 +1245,29 @@ class WebGuiApiTests(unittest.TestCase):
         self.assertNotIn("third-secret-token", app_log)
         self.assertNotIn("token: two", app_log.lower())
         self.assertIn("Bearer ***", app_log)
+
+    def test_diagnostics_export_skips_symlinked_log_files(self):
+        self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
+        secret_path = self.paths.app_support_dir / "secret.txt"
+        secret_path.write_text("do-not-export", encoding="utf-8")
+        symlink_path = self.paths.logs_dir / "symlink.log"
+        try:
+            symlink_path.symlink_to(secret_path)
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
+        data = self._post_json("/api/diagnostics/export", {})
+        bundle_path = Path(data["bundle_path"])
+
+        with zipfile.ZipFile(bundle_path) as archive:
+            names = set(archive.namelist())
+            archive_payload = {
+                name: archive.read(name).decode("utf-8", errors="replace")
+                for name in names
+            }
+
+        self.assertNotIn("logs/symlink.log", names)
+        self.assertNotIn("do-not-export", json.dumps(archive_payload, ensure_ascii=False))
 
     def test_logs_endpoint_returns_folder_path(self):
         data = self._get_json("/api/logs")
@@ -1869,6 +1918,12 @@ class WebGuiApiTests(unittest.TestCase):
         latest_media_path = self.paths.default_output_path / "album" / "Song.m4a"
         latest_media_path.parent.mkdir(parents=True, exist_ok=True)
         latest_media_path.write_text("audio", encoding="utf-8")
+        self.server.settings_store.save(
+            {
+                "output_path": str(self.paths.default_output_path),
+                "open_file_application": "VLC",
+            }
+        )
         job = Job(
             id="job-open-file-app",
             urls=["https://music.apple.com/us/album/test/1?i=2"],
@@ -1890,6 +1945,32 @@ class WebGuiApiTests(unittest.TestCase):
             self.server.file_actions.calls[-1],
             ("open_file", str(latest_media_path), "VLC"),
         )
+
+    def test_open_latest_file_action_rejects_unlisted_application(self):
+        latest_media_path = self.paths.default_output_path / "album" / "Song.m4a"
+        latest_media_path.parent.mkdir(parents=True, exist_ok=True)
+        latest_media_path.write_text("audio", encoding="utf-8")
+        job = Job(
+            id="job-open-file-unlisted-app",
+            urls=["https://music.apple.com/us/album/test/1?i=2"],
+            url_preview=[],
+            payload={"output_path": str(latest_media_path.parent)},
+            command=[],
+            status="completed",
+            result={"latest_media_path": str(latest_media_path)},
+        )
+        self._store_job(job)
+
+        status, body, _headers = self._request(
+            "/api/jobs/job-open-file-unlisted-app/open-latest-file",
+            method="POST",
+            payload={"application_path": "/tmp/not-from-menu"},
+        )
+        data = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], INVALID_OPEN_APPLICATION_ERROR)
+        self.assertEqual(self.server.file_actions.calls, [])
 
     def test_open_latest_file_action_can_choose_application(self):
         latest_media_path = self.paths.default_output_path / "album" / "Song.m4a"

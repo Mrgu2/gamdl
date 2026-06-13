@@ -9,7 +9,8 @@ from gamdl.downloader import AppleMusicBaseDownloader, AppleMusicDownloader, App
 from gamdl.downloader.exceptions import FormatNotAvailable, MediaFileExists
 from gamdl.downloader.types import DownloadItem
 from gamdl.interface import SongCodec
-from gamdl.interface.types import Lyrics, MediaTags, PlaylistTags
+from gamdl.interface.enums import MediaFileFormat
+from gamdl.interface.types import Lyrics, MediaTags, PlaylistTags, StreamInfo, StreamInfoAv
 
 
 class AppleMusicSongDownloaderTests(unittest.TestCase):
@@ -233,6 +234,60 @@ class AppleMusicSongDownloaderTests(unittest.TestCase):
                 Path(tempdir) / "downloads" / "Artist A" / "Top Songs" / "Track Title [12345].jpg",
             )
 
+    def test_get_download_item_uses_library_webplayback_and_drm_free_stream(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            stream_info = StreamInfoAv(
+                media_id="i.library-song",
+                audio_track=StreamInfo(
+                    stream_url="https://example.com/library.m4a",
+                    drm_free=True,
+                    legacy=False,
+                ),
+                file_format=MediaFileFormat.M4A,
+            )
+            interface = SimpleNamespace(
+                get_media_id_of_library_media=MagicMock(return_value="catalog-123"),
+                get_lyrics=AsyncMock(return_value=None),
+                apple_music_api=SimpleNamespace(
+                    get_webplayback=AsyncMock(
+                        return_value={"songList": [{"songId": "i.library-song"}]}
+                    )
+                ),
+                get_tags=AsyncMock(
+                    return_value=MediaTags(
+                        album="Library",
+                        artist="Artist",
+                        title="Track Title",
+                        track=1,
+                    )
+                ),
+                get_stream_info=AsyncMock(return_value=stream_info),
+                get_cover_url_template=MagicMock(return_value="https://example.com/{w}x{h}.jpg"),
+                get_cover_url=MagicMock(return_value="https://example.com/cover.jpg"),
+                get_cover_file_extension=AsyncMock(return_value=".jpg"),
+            )
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=interface,
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+            song_metadata = {
+                "id": "i.library-song",
+                "type": "library-songs",
+                "attributes": {"name": "Track Title", "playParams": {"isLibrary": True}},
+            }
+
+            download_item = asyncio.run(downloader.get_download_item(song_metadata))
+
+            interface.apple_music_api.get_webplayback.assert_awaited_once_with(
+                "i.library-song",
+                is_library=True,
+            )
+            self.assertTrue(download_item.stream_info.audio_track.drm_free)
+            self.assertIsNone(download_item.decryption_key)
+            self.assertTrue(interface.get_stream_info.await_args.kwargs["is_library"])
+
     def test_get_final_path_keeps_existing_album_structure_outside_top_songs(self):
         with tempfile.TemporaryDirectory() as tempdir:
             base_downloader = self._build_base_downloader(tempdir)
@@ -372,6 +427,78 @@ class AppleMusicSongDownloaderTests(unittest.TestCase):
 
         self.assertEqual(result, [])
         downloader.interface.apple_music_api.extend_api_data.assert_not_called()
+
+    def test_library_song_url_uses_library_song_api(self):
+        song_metadata = {
+            "id": "i.library-song",
+            "type": "library-songs",
+            "attributes": {"name": "Library Track", "playParams": {"isLibrary": True}},
+        }
+        interface = SimpleNamespace(
+            apple_music_api=SimpleNamespace(
+                get_library_song=AsyncMock(return_value={"data": [song_metadata]}),
+                get_song=AsyncMock(),
+            )
+        )
+        base_downloader = SimpleNamespace(is_media_streamable=MagicMock(return_value=True))
+        song_downloader = SimpleNamespace(
+            get_download_item=AsyncMock(return_value=DownloadItem(media_metadata=song_metadata))
+        )
+        downloader = AppleMusicDownloader(
+            interface=interface,
+            base_downloader=base_downloader,
+            song_downloader=song_downloader,
+            music_video_downloader=None,
+            uploaded_video_downloader=None,
+        )
+        url_info = downloader.get_url_info(
+            "https://music.apple.com/library/songs/i.librarySong123"
+        )
+
+        result = asyncio.run(downloader.get_download_queue(url_info))
+
+        self.assertEqual(len(result), 1)
+        interface.apple_music_api.get_library_song.assert_awaited_once_with(
+            "i.librarySong123"
+        )
+        interface.apple_music_api.get_song.assert_not_called()
+
+    def test_library_music_video_url_uses_library_music_video_api(self):
+        music_video_metadata = {
+            "id": "i.library-video",
+            "type": "library-music-videos",
+            "attributes": {"name": "Library Video", "playParams": {"isLibrary": True}},
+        }
+        interface = SimpleNamespace(
+            apple_music_api=SimpleNamespace(
+                get_library_music_video=AsyncMock(return_value={"data": [music_video_metadata]}),
+                get_music_video=AsyncMock(),
+            )
+        )
+        base_downloader = SimpleNamespace(is_media_streamable=MagicMock(return_value=True))
+        music_video_downloader = SimpleNamespace(
+            get_download_item=AsyncMock(
+                return_value=DownloadItem(media_metadata=music_video_metadata)
+            )
+        )
+        downloader = AppleMusicDownloader(
+            interface=interface,
+            base_downloader=base_downloader,
+            song_downloader=None,
+            music_video_downloader=music_video_downloader,
+            uploaded_video_downloader=None,
+        )
+        url_info = downloader.get_url_info(
+            "https://music.apple.com/library/music-videos/i.libraryVideo123"
+        )
+
+        result = asyncio.run(downloader.get_download_queue(url_info))
+
+        self.assertEqual(len(result), 1)
+        interface.apple_music_api.get_library_music_video.assert_awaited_once_with(
+            "i.libraryVideo123"
+        )
+        interface.apple_music_api.get_music_video.assert_not_called()
 
     def test_download_failure_does_not_write_sidecars_or_playlist_file(self):
         interface = SimpleNamespace(get_cover_bytes=AsyncMock(return_value=b"cover"))
@@ -691,6 +818,108 @@ class AppleMusicSongDownloaderTests(unittest.TestCase):
                 2,
             )
             self.assertTrue(any("cover" in line and "Track 1" in line for line in logs.output))
+
+    def test_drm_free_song_download_skips_decryption_stage(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            interface = SimpleNamespace(get_cover_bytes=AsyncMock(return_value=b"cover"))
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=interface,
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+            downloader.download_stream = AsyncMock()
+            downloader.stage = AsyncMock()
+            downloader.apply_tags = AsyncMock()
+
+            download_item = DownloadItem(
+                media_metadata={"id": "i.library-song", "type": "library-songs"},
+                random_uuid="abc123",
+                staged_path=str(Path(tempdir) / "staged.m4a"),
+                stream_info=StreamInfoAv(
+                    audio_track=StreamInfo(
+                        stream_url="https://example.com/library.m4a",
+                        drm_free=True,
+                        legacy=False,
+                    )
+                ),
+                media_tags=MediaTags(title="Track Title"),
+                cover_url="https://example.com/cover.jpg",
+            )
+
+            asyncio.run(downloader.download(download_item))
+
+            downloader.download_stream.assert_awaited_once_with(
+                "https://example.com/library.m4a",
+                str(Path(tempdir) / "staged.m4a"),
+            )
+            downloader.stage.assert_not_awaited()
+            downloader.apply_tags.assert_awaited_once()
+
+    def test_stage_forwards_cenc_and_single_content_key_to_hex_decrypt(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=SimpleNamespace(),
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+            downloader.use_wrapper = False
+            downloader.decrypt_amdecrypt_hex = AsyncMock()
+            decryption_key = SimpleNamespace(audio_track=SimpleNamespace(key="00" * 16))
+
+            asyncio.run(
+                downloader.stage(
+                    "/tmp/encrypted.m4a",
+                    "/tmp/staged.m4a",
+                    decryption_key,
+                    False,
+                    "song-123",
+                    "skd://track",
+                    use_cenc=True,
+                    use_single_content_key=True,
+                )
+            )
+
+            downloader.decrypt_amdecrypt_hex.assert_awaited_once_with(
+                "/tmp/encrypted.m4a",
+                "/tmp/staged.m4a",
+                "00" * 16,
+                False,
+                use_cenc=True,
+                use_single_content_key=True,
+            )
+
+    def test_stage_forwards_single_content_key_to_wrapper_decrypt(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base_downloader = self._build_base_downloader(tempdir)
+            downloader = AppleMusicSongDownloader(
+                base_downloader=base_downloader,
+                interface=SimpleNamespace(),
+                codec_priority=[SongCodec.AAC_LEGACY],
+            )
+            downloader.use_wrapper = True
+            downloader.decrypt_amdecrypt = AsyncMock()
+
+            asyncio.run(
+                downloader.stage(
+                    "/tmp/encrypted.m4a",
+                    "/tmp/staged.m4a",
+                    None,
+                    False,
+                    "song-123",
+                    "skd://track",
+                    use_single_content_key=True,
+                )
+            )
+
+            downloader.decrypt_amdecrypt.assert_awaited_once_with(
+                "/tmp/encrypted.m4a",
+                "/tmp/staged.m4a",
+                "song-123",
+                "skd://track",
+                use_single_content_key=True,
+            )
 
 
 if __name__ == "__main__":
